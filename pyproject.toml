@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "robot-reach"
+version = "0.1.0"
+description = "BAM Reach v2: reachability of any arm in joint space and Cartesian space, from FK and IK passed in as pure functions; computed once, viewed in viser."
+readme = "README.md"
+authors = [{ name = "Zach Yamaoka" }]
+license = "MIT"
+requires-python = ">=3.11"
+# WHY numpy + robot_msgs only (Zach's dependency-free runtime cores; robot_msgs is the shared
+# vocabulary every new package depends on): the analysis must import with nothing heavier.
+# The viewer and the plots are extras.
+dependencies = ["numpy>=1.26", "robot-msgs>=0.3.0"]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+# WHY viser pinned through viser-3d-viewer: the house viewer pins viser==1.1.1 (client contract);
+# taking it gives the ViewCube, no logo and asserted ports for free.
+viz = ["viser==1.1.1", "viser-3d-viewer", "matplotlib>=3.8"]
+test = ["pytest>=8", "matplotlib>=3.8", "viser==1.1.1", "viser-3d-viewer"]
+
+[tool.uv.sources]
+robot-msgs = { path = "/home/bam/robot_msgs", editable = true }
+viser-3d-viewer = { path = "/home/bam/viser-3d-viewer", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robot_reach"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
