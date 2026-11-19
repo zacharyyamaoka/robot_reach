@@ -59,10 +59,18 @@ def main(argv=None) -> int:
         p.add_argument("--fresh", action="store_true", help="recompute even if a saved result exists")
         p.add_argument("--port", type=int, default=0)
         p.add_argument("--no-view", action="store_true")
+    u = sub.add_parser("urdf", help="reachability of every kinematic chain of a URDF")
+    u.add_argument("urdf", type=Path)
+    u.add_argument("--tip", action="append", help="only this tip link (repeatable)")
+    u.add_argument("--floor", type=float, default=None, help="floor height (m) for collision")
+    u.add_argument("--full", action="store_true", help="the full default sampling (slow with numeric IK)")
+    u.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    u.add_argument("--port", type=int, default=0)
+    u.add_argument("--no-view", action="store_true")
     v = sub.add_parser("view")
     v.add_argument("folders", nargs="+", type=Path)
     v.add_argument("--port", type=int, default=0)
-    for p in (sub.choices["run"], sub.choices["examples"], v):
+    for p in (sub.choices["run"], sub.choices["examples"], v, u):
         p.add_argument("--arm", help="which arm to open first")
         p.add_argument("--select", help="x,y,z: preselect the nearest workspace point (a scripted click)")
         p.add_argument("--solution", type=int, default=1, help="which of that point's solutions to show")
@@ -75,6 +83,19 @@ def main(argv=None) -> int:
 
         results = {f.name: load(f) for f in a.folders}
         _open(ReachViewer, results, a)
+        return 0
+    if a.cmd == "urdf":
+        from .urdf import analyze_chains
+
+        t = time.perf_counter()
+        results = analyze_chains(a.urdf, a.tip, floor_z=a.floor, quick=not a.full)
+        for name, res in results.items():
+            folder = a.out / "urdf" / a.urdf.stem / name.split(" ")[0]
+            res.save(folder)
+            print(f"{name}: {json.dumps(res.summary().get('reach', {}))[:300]} -> {folder}", flush=True)
+        print(f"{len(results)} chain(s) in {time.perf_counter() - t:.1f} s", flush=True)
+        if not a.no_view:
+            _open(ReachViewer, results, a)
         return 0
     names = list(EXAMPLES) if a.cmd == "examples" or "all" in a.arms else a.arms
     results = _run(names, a.out, a.fresh)

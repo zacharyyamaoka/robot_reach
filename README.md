@@ -74,6 +74,27 @@ separate bodies, unlike a convex hull), FK cloud, Jog sliders with the live code
 **Ask here**: drag a box and **Compute box** samples it finer; **Drop POI** checks every orientation
 at one point and draws a green/grey spike per approach.
 
+## Any URDF or RobotDescription, every kinematic chain
+
+```python
+from robot_reach.urdf import analyze_chains, arm_from_description, arm_from_urdf, chains
+
+chains(desc)                                   # [(base, tip, dof), ...] — desc, URDF path or XML
+arm = arm_from_description(desc, "ee_link")    # duck-typed: only calls desc.to_urdf_string()
+results = analyze_chains(desc, floor_z=0.0)    # {"ee_link (6 DOF)": ReachResult, ...}
+```
+
+```bash
+uv run --project /home/bam/robot_reach --extra viz python -m robot_reach urdf /abs/path/robot.urdf --floor 0.0
+```
+
+FK comes from the URDF with stdlib XML + numpy (revolute, continuous, prismatic, mimic). Without an
+analytic IK, a batched damped-least-squares IK runs from 8 seeds per target and merges duplicates,
+so you still get several distinct branches (UR5e: 100 % solved, 4.5 branches on average; every one
+matches a closed-form branch). It is slower than closed form — UR5e quick map (48 orientations,
+131k targets) ~75 s vs ~19 s for the 132-orientation closed-form map — so pass `ik=` when you have
+one. `quick=True` (default) samples 48 orientations at a grid step of extent/12.
+
 ## Drawing into someone else's scene
 
 ```python
