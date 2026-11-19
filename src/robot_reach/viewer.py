@@ -247,7 +247,8 @@ class ReachViewer:
         self.g_show = g.add_dropdown("Show", tuple(kinds), initial_value="reachable")
         colors = ["pose DOF", "IK solutions", "fraction of orientations"] if oriented else ["IK solutions"]
         self.g_color = g.add_dropdown("Colour by", tuple(colors), initial_value=colors[0])
-        self.g_voxel = g.add_slider("Voxel size", min=0.1, max=1.0, step=0.05, initial_value=0.55)
+        # WHY bigger for planar maps: one layer of voxels hides nothing, and gaps make clicks miss
+        self.g_voxel = g.add_slider("Voxel size", min=0.1, max=1.0, step=0.05, initial_value=0.9 if self.planar else 0.55)
         self.g_cut = g.add_dropdown("Cut", ("none", "x", "y", "z"), initial_value="none")
         self.g_cut_at = g.add_slider("Cut at (m)", min=-1.0, max=1.0, step=0.005, initial_value=0.0, disabled=True)
         self.g_blob = g.add_checkbox("Blob (surface)", initial_value=False)
