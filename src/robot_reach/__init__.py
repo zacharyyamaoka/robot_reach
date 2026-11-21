@@ -9,7 +9,7 @@
 """
 
 from .analyze import ReachResult, analyze, load
-from .arm import Arm
+from .arm import Arm, ArmMesh
 from .codes import CODE_COLORS, CODE_LABELS, LEVEL_NAMES, Code
 from .joint_space import JointMap, JointRanges, joint_map, joint_ranges
 from .orientations import OrientationSet
@@ -18,6 +18,7 @@ from .sampling import Box, FKCloud, fk_cloud
 
 __all__ = [
     "Arm",
+    "ArmMesh",
     "Box",
     "Code",
     "CODE_COLORS",

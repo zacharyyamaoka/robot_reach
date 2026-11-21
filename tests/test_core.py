@@ -171,3 +171,37 @@ def test_from_scalar_wraps_one_pose_functions():
 def test_analyze_skips_the_grid_for_a_curve_workspace():
     res = rr.analyze(pendulum())
     assert res.reach is None and len(res.joint_maps) == 1
+
+
+# --------------------------------------------------------------------------- optional geometry hooks
+def test_surface_poses_meshes_and_falls_back_to_the_skeleton():
+    from robot_reach import ArmMesh
+    from robot_reach.robots import rr as rr_arm
+
+    base = rr_arm()
+    q = np.array([[0.3, -0.6]])
+    # no meshes: points every <= 5 mm along the skeleton, ends included
+    pts = base.surface(q)[0]
+    chain = base.chain(q)[0]
+    assert np.allclose(pts[0], chain[0]) and np.allclose(pts[-1], chain[-1])
+    assert np.max(np.linalg.norm(np.diff(pts, axis=0), axis=1)) <= 0.005 + 1e-12
+
+    # one cube per link, posed at the link's start: surface = the cube's vertices moved by that pose
+    cube = np.array([[x, y, z] for x in (0, 0.02) for y in (0, 0.02) for z in (0, 0.02)], float)
+
+    def mesh_poses(Q):
+        c = base.chain(Q)
+        T = np.tile(np.eye(4), (len(Q), 2, 1, 1))
+        T[:, 0, :3, 3], T[:, 1, :3, 3] = c[:, 0], c[:, 1]
+        return T
+
+    import dataclasses
+
+    arm = dataclasses.replace(base, meshes=(ArmMesh("upper", cube), ArmMesh("fore", cube, draw=False), ArmMesh("cad", cube, measure=False)),
+                              mesh_poses=lambda Q: np.concatenate([mesh_poses(Q), mesh_poses(Q)[:, :1]], axis=1))
+    got = arm.surface(q)[0]
+    assert got.shape == (16, 3)  # the unmeasured third mesh never counts
+    assert np.allclose(got[:8], cube + chain[0]) and np.allclose(got[8:], cube + chain[1])
+    assert np.allclose(arm.surface(q, parts=("fore",))[0], cube + chain[1])
+    assert arm.surface(q, max_per_mesh=2).shape == (1, 4, 3)
+    assert arm.surface(q, parts=("nothing",)).shape == (1, 0, 3)

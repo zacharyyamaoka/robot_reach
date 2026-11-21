@@ -38,7 +38,9 @@ arm = rr.Arm(
 
 One-pose-at-a-time functions work too: `rr.Arm.from_scalar(name, joints, lower, upper, fk, ik)`.
 Optional hooks: `skeleton` (points to draw), `mass_points` + `masses` + `torque_limits` (static
-gravity torque), `collision`, `singular` (a mechanism's own singularity test), `meta["home"]`.
+gravity torque), `collision`, `singular` (a mechanism's own singularity test), `meta["home"]`, and
+`meshes` + `mesh_poses` (rigid `ArmMesh` parts posed per q: `arm.surface(q)` gives dense points for
+clearance and footprint, where the skeleton has no thickness).
 
 The library re-checks everything an IK claims: joint limits (trying the ±2π twin of revolute
 joints), the FK round trip, duplicate branches, collision, torque and singularity. A lazy solver

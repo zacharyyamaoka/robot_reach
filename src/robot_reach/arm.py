@@ -17,6 +17,9 @@ Conventions (the whole contract):
   singularity itself, so a lazy solver cannot overclaim.
 - The tool's local +Z is the approach axis (what "4-DOF" and "hemisphere" are measured against).
 - Units: SI, joint angles in radians. Views show degrees.
+- Optional geometry (``meshes`` + ``mesh_poses``): rigid parts posed per configuration, for what the
+  skeleton is too crude for (clearance over a belt, the footprint). ``mesh_poses(q)``: ``(N, dof) ->
+  (N, M, 4, 4)`` base->part transforms, one per entry of ``meshes`` (NaN where FK fails).
 """
 
 from __future__ import annotations
@@ -38,6 +41,27 @@ Task = Literal["pose", "axis", "position"]
 """
 
 CHUNK = 20_000  # poses per vectorised IK/FK call; bounds peak memory on big maps
+SKELETON_STEP_M = 0.005  # spacing of the points `surface` samples along the skeleton when an arm has no meshes
+
+
+@dataclass(frozen=True, eq=False)
+class ArmMesh:
+    """One rigid part of an arm's geometry, in its own frame (``Arm.mesh_poses`` places it).
+
+    - `part`: the link it belongs to (several meshes may share one), so a caller can ask for a subset
+      ("the hand") by name.
+    - `vertices` (V, 3) m; `faces` (F, 3) vertex indices, or None for a plain point set.
+    - `color`: RGB 0-255 for drawing (None = the viewer's default).
+    - `draw` / `measure`: whether a viewer draws it and whether `Arm.surface` counts it. WHY separate:
+      a CAD model often has a fine visual mesh and a coarser collision hull for the same link; you draw
+      the one and measure the other (or both)."""
+
+    part: str
+    vertices: np.ndarray
+    faces: np.ndarray | None = None
+    color: tuple[int, int, int] | None = None
+    draw: bool = True
+    measure: bool = True
 
 
 @dataclass(frozen=True, eq=False)
@@ -64,6 +88,9 @@ class Arm:
     plane: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
     description: str = ""
     meta: dict = field(default_factory=dict)
+    # Rigid geometry (module docstring): `ArmMesh` parts and their poses, (N, dof) -> (N, M, 4, 4).
+    meshes: tuple[ArmMesh, ...] = ()
+    mesh_poses: Callable[[np.ndarray], np.ndarray] | None = None
 
     # ------------------------------------------------------------------ basics
     @property
@@ -178,6 +205,42 @@ class Arm:
             return np.asarray(self.skeleton(q), float)
         T, _ = self.forward(q)
         return np.stack([np.zeros((len(q), 3)), T[:, :3, 3]], axis=1)
+
+    # ------------------------------------------------------------------ geometry
+    def surface_parts(self, parts: Sequence[str] | None = None) -> list[int]:
+        """Indices into `meshes` that `surface` counts: ``measure`` ones, optionally only `parts`."""
+        wanted = None if parts is None else set(parts)
+        return [i for i, m in enumerate(self.meshes) if m.measure and (wanted is None or m.part in wanted)]
+
+    def surface(self, q: np.ndarray, parts: Sequence[str] | None = None, max_per_mesh: int | None = None) -> np.ndarray:
+        """Dense points on the arm, (N, P, 3): every measured mesh vertex, posed; NaN where FK fails.
+
+        `parts` keeps only meshes of those links; `max_per_mesh` keeps at most that many vertices of each
+        mesh (evenly spaced through its vertex list). Without meshes, points every 5 mm along the
+        skeleton (`chain`) — crude: a skeleton has no thickness."""
+        q = np.atleast_2d(np.asarray(q, float))
+        index = self.surface_parts(parts)
+        if self.meshes and self.mesh_poses is not None:
+            if not index:
+                return np.zeros((len(q), 0, 3))
+            T = np.asarray(self.mesh_poses(q), float)
+            out = []
+            for i in index:
+                v = np.asarray(self.meshes[i].vertices, float)
+                if max_per_mesh and len(v) > max_per_mesh:
+                    v = v[np.linspace(0, len(v) - 1, max_per_mesh).astype(int)]
+                out.append(np.einsum("nij,pj->npi", T[:, i, :3, :3], v) + T[:, i, None, :3, 3])
+            return np.concatenate(out, axis=1)
+        chain = self.chain(q)
+        if chain.shape[1] < 2:
+            return chain
+        segs = []
+        for a, b in zip(np.moveaxis(chain[:, :-1], 1, 0), np.moveaxis(chain[:, 1:], 1, 0)):
+            length = np.linalg.norm(b - a, axis=1)
+            longest = float(np.max(length[np.isfinite(length)], initial=0.0))
+            t = np.linspace(0.0, 1.0, int(np.clip(np.ceil(longest / SKELETON_STEP_M), 1, 400)) + 1)
+            segs.append(a[:, None, :] + t[None, :, None] * (b - a)[:, None, :])
+        return np.concatenate(segs, axis=1)
 
     # ------------------------------------------------------------------ joint-space checks
     def check(
