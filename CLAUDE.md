@@ -10,3 +10,6 @@ BAM Reach v2 (project note: ~/zach_brain/PROJECT - BAM Reach.md). Read README.md
 - Angles shown to humans in degrees; data in radians, SI.
 - Verify viewer changes with the headless-viser skill (real browser), not only tests/test_viewer.py.
 - Host: when the robot loop is live, ≤2 worker processes, `taskset -c 2-5,16,17`.
+- Rest poses (`rest.py`, `rest_viewer.py`, `rest_plots.py`): footprint / clearance / holding power over a `Scene`. An arm's FK may keep
+  state (bam_fb_v2's MuJoCo data), so anything measuring from two threads goes through the viewer's `arm_lock`.
+- Arm-specific adapters (bam_fb_v2: bam_ws `docs/named_poses/rest_explorer/`) live with the arm, never here.

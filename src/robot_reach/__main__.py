@@ -3,6 +3,7 @@
     python -m robot_reach examples            # compute (or reuse) all five examples, view them
     python -m robot_reach run ur5e rr         # compute + save + PNG figures
     python -m robot_reach view out/ur5e       # view saved results
+    python -m robot_reach rest shoulder3      # the rest-pose explorer (spec: an example, file.py:func or module:func)
 """
 
 from __future__ import annotations
@@ -46,8 +47,53 @@ def _run(names, out: Path, fresh: bool):
     return results
 
 
+def _load_spec(spec: str):
+    """A rest-study factory: an example name (examples.REST_EXAMPLES), ``/abs/file.py:func`` or ``module:func``."""
+    from .examples import REST_EXAMPLES
+
+    if spec in REST_EXAMPLES:
+        return REST_EXAMPLES[spec]
+    if ":" not in spec:
+        raise SystemExit(f"rest: {spec!r} is not an example ({', '.join(REST_EXAMPLES)}) nor file.py:func / module:func")
+    where, func = spec.rsplit(":", 1)
+    if where.endswith(".py"):
+        import importlib.util
+
+        path = Path(where).resolve()
+        sys.path.insert(0, str(path.parent))
+        mod_spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(mod_spec)
+        sys.modules[path.stem] = module
+        mod_spec.loader.exec_module(module)
+    else:
+        import importlib
+
+        module = importlib.import_module(where)
+    return getattr(module, func)
+
+
+def rest_main(argv) -> int:
+    """``rest <spec> [--poses F] [--candidates F] [viewer options]``: see robot_reach.rest_viewer.cli."""
+    from .rest_viewer import cli, with_pose_files
+
+    ap = argparse.ArgumentParser(prog="robot_reach rest", add_help=False)
+    ap.add_argument("spec")
+    ap.add_argument("--poses", type=Path, action="append", default=[], help="robot_msgs named-poses JSON (repeatable)")
+    ap.add_argument("--candidates", type=Path, action="append", default=[], help="candidates JSON (repeatable)")
+    if not argv or argv[0] in ("-h", "--help"):
+        ap.print_help()
+        return cli(lambda: None, ["--help"])
+    a, rest = ap.parse_known_args(argv)
+    factory = _load_spec(a.spec)
+    return cli(lambda: with_pose_files(factory(), a.poses, a.candidates), rest)
+
+
 def main(argv=None) -> int:
     from .examples import EXAMPLES
+
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "rest":
+        return rest_main(argv[1:])
 
     ap = argparse.ArgumentParser(prog="robot_reach")
     sub = ap.add_subparsers(dest="cmd", required=True)

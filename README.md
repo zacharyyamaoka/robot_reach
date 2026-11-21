@@ -97,6 +97,79 @@ matches a closed-form branch). It is slower than closed form — UR5e quick map 
 131k targets) ~75 s vs ~19 s for the 132-orientation closed-form map — so pass `ik=` when you have
 one. `quick=True` (default) samples 48 orientations at a grid step of extent/12.
 
+## Find a good ready/rest pose for any arm
+
+Where should an arm wait? `robot_reach.rest` measures one pose over a scene and the explorer shows
+it: the arm in 3D, and beside it the three numbers that decide a rest pose.
+
+```bash
+uv run --project /home/bam/robot_reach --extra viz python -m robot_reach rest shoulder3
+```
+
+- **Footprint**: how far the hand reaches from a reference line (the belt's centre line, the
+  shoulder's vertical) across and along, the hull area of the whole arm on the plane, and how far
+  anything sticks past the arm's lane toward a neighbouring arm.
+- **Clearance**: the lowest arm point over the region (the belt between its edges), measured along
+  the plane's normal, and the clearance over each keep-out (a rail). Red only under the gate.
+- **Holding power**: static gravity torque per joint by virtual work (tau = dU/dq through the arm's
+  own FK, so a five-bar's closure is handled by its FK), into copper watts per motor
+  (P = 3/2·R·i², i = |tau| / (kt·ratio)), or your measured `torque(q)` / `power(q, tau)`.
+
+The template for your arm, in order (the shoulder3 example is `robot_reach.examples.rest_example`):
+
+1. **The arm**: an `Arm` with masses (`mass_points` + `masses`) and, for real clearance, geometry:
+   `meshes` + `mesh_poses` (CAD), or `rest.with_link_boxes(arm, width)` to fatten a skeleton.
+2. **The scene** (arm frame, z up): `Scene(origin=<a point on the reference line>, across=, along=,
+   plane_point=, plane_normal=, region_across=(lo, hi), keepouts=(KeepOut("rail", top=, across=),),
+   neighbours=("along",), lane_along=(lo, hi), min_clearance=)`. Coordinates are measured from
+   `origin`: across, along, up.
+3. **The motors**: `Motor(kt, resistance, ratio)` per joint (`Motor.from_kv` for a Kv), or a
+   measured `power(q, tau)`.
+4. **Criteria before options**: `Gate`s (pass/fail) and anchored `Criterion`s (score 1 at `best`,
+   0 at `worst`), fixed before you look at the candidates.
+5. **The poses**: named poses from a robot_msgs named-poses JSON (`--poses`; name, description and
+   digest shown) and candidates from any plain JSON (`--candidates`), then
+   `rank(reports_for(study), study.gates, study.criteria)`.
+
+```python
+import numpy as np
+
+from robot_reach.rest import Criterion, Gate, KeepOut, Motor, RestStudy, Scene, with_link_boxes
+from robot_reach.robots import shoulder3
+
+arm = with_link_boxes(shoulder3(), width=0.05, names=("base", "upper", "forearm"))
+scene = Scene(origin=(0.0, 0.0, 0.0), plane_point=(0.35, 0.0, -0.05), region_across=(0.15, 0.55),
+              keepouts=(KeepOut("far rail", top=0.0, across=(0.55, 0.58)),), lane_along=(-0.15, 0.15),
+              min_clearance=0.10)
+study = RestStudy(arm, scene, motors=(Motor(kt=0.10, resistance=0.25, ratio=15.0),) * arm.dof, hand=("forearm",),
+                  gates=(Gate(">= 100 mm over the belt", "clearance_m", min=0.10),),
+                  criteria=(Criterion("low holding power", "power_w", 2.0, best=0.0, worst=3.0),))
+print(study.measure(np.deg2rad([0.0, 45.0, -90.0])).headline())
+```
+
+```text
+{'footprint': '407 mm from the line · hull 0.022 m²', 'clearance': '168 mm', 'holding': '2.66 W'}
+```
+
+A candidates file is a list of rows (or `{"candidates": [...]}`, or `{name: row}`), each naming its
+joints in radians (`q_rad`, `joint_rad`) or degrees (`q_deg`, `joint_deg`); a study's `aliases` map
+other joint names (`J1`) to the arm's:
+
+```json
+{"candidates": [{"name": "fist up", "description": "claw up beside the forearm",
+                 "joint_deg": {"J1": -2, "J2": 40, "C1": 70, "W1": 120, "W2": 90, "W3": 0}}]}
+```
+
+Viewer options (after the spec): `--pose NAME`, `--set JOINT=DEG` (a scripted jog), `--export DIR`
+(one PNG + metrics JSON per pose and `index.json` with the ranking), `--out DIR` (where the
+**Save PNG + card** button writes), `--no-view`, `--port`. The spec is an example name,
+`/abs/file.py:func` or `module:func` returning a `RestStudy`.
+
+**bam_fb_v2** (the instance this was built for) lives in bam_ws, not here (robot_reach never imports
+bam_ws): `docs/named_poses/rest_explorer/` — the full arm's CAD meshes and 15c masses, the measured
+belt, the fitted J2/C1 comp, the description's named poses — launched with its `rest-explorer`
+script. Its numbers match the 2026-11-20 W1-plumb study on all 11 of its poses within 2e-6 W and 1e-12 mm (test tolerance 0.01 W, 0.1 mm: `rest-explorer test`).
+
 ## Drawing into someone else's scene
 
 ```python
