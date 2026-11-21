@@ -167,6 +167,41 @@ Viewer options (after the spec): `--pose NAME`, `--set JOINT=DEG` (a scripted jo
 **Save PNG + card** button writes), `--no-view`, `--port`. The spec is an example name,
 `/abs/file.py:func` or `module:func` returning a `RestStudy`.
 
+### Solve for the best pose of a use case
+
+Zach's four cases (*"you have a robot arm ... define a workspace where you want to do picking and then
+like zones that you need to stay clear of ... and then within that zone you can pick the ideal
+position"*) are each a `PoseGoal` with a few settings, solved on any `Arm`:
+
+```bash
+uv run --project /home/bam/robot_reach --extra viz python -m robot_reach rest shoulder3 --solve
+```
+
+| Setting | What it says | Example (a belt) |
+|---|---|---|
+| `clearances` | least distance per scene zone (`"plane"` or its label, a keep-out's name, `"lane"`); `0` = touching allowed, `None` = ignored | 0.120 m while waste flows, ~0.020 m over an empty belt, 0 with the machine off |
+| `torque` | `"held"` (energy = copper W) or `"limp"` (torque off: a passive rest that settles within `settle_deg` and survives a `kick_deg` nudge; energy 0) | `"limp"` when the machine is off |
+| `workspace` | the task poses to be ready for (tool poses solved by the arm's IK or a numeric IK, or your planner's joint configurations); **readiness** = time to each (trapezoid per joint under `Arm.velocity_limits` / `acceleration_limits`, the slowest joint), mean and worst | hover points over the pick zone |
+| `weights` | over `energy` (W), `readiness` (s), `compactness` (the hand's reach from the reference line), `occlusion` (fraction of the workspace a `Camera` loses behind the arm) | ready: readiness 3, energy 1 |
+
+Gates first (clearances, limits less `stop_margin_deg`, closure, self-collision, torque limits when
+held, the passive rest when limp, your own `Gate`s), then a weighted score over objectives normalised
+over the poses that pass (or your `anchors`). `solve` samples the joint space (a closed chain through
+its FK: a pose that does not close fails), refines the best few by a pattern search, and returns the
+Pareto set, the pick and a NamedPose-ready `record` (a one-line description with the headline numbers,
+a why listing the settings and the result; `goals.to_named_pose(record)`).
+
+**Limp, what is modelled**: gradient flow on the potential of the arm's point masses through its own
+FK (no inertia, so no overshoot); the joint limits are the hard stops; a joint holds while its gravity
+torque is under `Arm.friction` (the pick also reports where it would end with no friction at all); a
+zone the goal lets it touch holds the arm where it first touches — sliding about the contact is not
+modelled.
+
+In the explorer the **Use case** folder (its **Goal** dropdown) shows a goal's settings, the pick and its Pareto runners-up (the
+**Solution** dropdown), the arm at the one chosen and a fourth headline number, readiness.
+`--solve --solutions FILE` saves the solutions; `--solutions FILE` alone reloads them (a goal whose
+settings changed is dropped and must be re-solved).
+
 **bam_fb_v2** (the instance this was built for) lives in bam_ws, not here (robot_reach never imports
 bam_ws): `docs/named_poses/rest_explorer/` — the full arm's CAD meshes and 15c masses, the measured
 belt, the fitted J2/C1 comp, the description's named poses — launched with its `rest-explorer`

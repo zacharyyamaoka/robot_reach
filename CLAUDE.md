@@ -13,3 +13,5 @@ BAM Reach v2 (project note: ~/zach_brain/PROJECT - BAM Reach.md). Read README.md
 - Rest poses (`rest.py`, `rest_viewer.py`, `rest_plots.py`): footprint / clearance / holding power over a `Scene`. An arm's FK may keep
   state (bam_fb_v2's MuJoCo data), so anything measuring from two threads goes through the viewer's `arm_lock`.
 - Arm-specific adapters (bam_fb_v2: bam_ws `docs/named_poses/rest_explorer/`) live with the arm, never here.
+- Pose goals (`goals.py`): a `PoseGoal` (clearances, held/limp, workspace + readiness, weights) -> gates, Pareto set, pick, NamedPose-ready
+  record. Robot-agnostic: no belt- or arm-specific code here; an arm's own sampler goes in `RestStudy.sampler`.

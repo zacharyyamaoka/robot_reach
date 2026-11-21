@@ -205,12 +205,12 @@ class PoseChoice:
     q: np.ndarray
     description: str = ""
     digest: str = ""
-    kind: str = "named"  # "named" | "candidate"
+    kind: str = "named"  # "named" | "candidate" | "goal" (a solved goal's pick)
     source: str = ""
 
     @property
     def label(self) -> str:
-        return self.name if self.kind == "named" else f"candidate · {self.name}"
+        return self.name if self.kind == "named" else f"{'goal' if self.kind == 'goal' else 'candidate'} · {self.name}"
 
 
 @dataclass(frozen=True, eq=False)
@@ -234,6 +234,10 @@ class RestStudy:
     gates: tuple[Gate, ...] = ()
     criteria: tuple[Criterion, ...] = ()
     aliases: Mapping[str, str] = field(default_factory=dict)  # other joint names (J1) -> the arm's, for pose files
+    goals: tuple = ()  # robot_reach.goals.PoseGoal: use cases to solve a pose for (the explorer's Goal picker)
+    # The arm's own sampler for the goal solver: (rng, n, lo (dof,), hi (dof,)) -> (n, dof) joint vectors inside [lo, hi];
+    # default uniform. WHY a hook: a closed chain closes in a small part of its joint box (bam_fb_v2's five-bar admits ~3 %).
+    sampler: Callable[[np.random.Generator, int, np.ndarray, np.ndarray], np.ndarray] | None = None
 
     def __post_init__(self):
         if self.motors is not None and len(self.motors) != self.arm.dof:
@@ -243,8 +247,8 @@ class RestStudy:
     def home(self) -> np.ndarray:
         return default_q(self.arm)
 
-    def measure(self, q) -> RestReport:
-        return measure(self, q)
+    def measure(self, q, *, hull: bool = True, max_per_mesh: int | None = None) -> RestReport:
+        return measure(self, q, hull=hull, max_per_mesh=max_per_mesh)
 
     def with_poses(self, *groups: Sequence[PoseChoice]) -> RestStudy:
         import dataclasses
@@ -509,8 +513,9 @@ def holding(study: RestStudy, q: np.ndarray) -> Holding:
     return Holding(tau=tau, watts=watts, total=total, current=current, limit_frac=limit, source=source)
 
 
-def measure(study: RestStudy, q) -> RestReport:
-    """Footprint, clearance and holding power of one pose (module docstring)."""
+def measure(study: RestStudy, q, *, hull: bool = True, max_per_mesh: int | None = None) -> RestReport:
+    """Footprint, clearance and holding power of one pose (module docstring). ``hull=False`` skips the
+    hull (NaN area; a solver screening thousands of poses); `max_per_mesh` overrides the study's."""
     import time
 
     t0 = time.perf_counter()
@@ -518,8 +523,9 @@ def measure(study: RestStudy, q) -> RestReport:
     q = np.asarray(q, float).reshape(arm.dof)
     code = int(arm.check(q[None])[0])
     _, fk_ok = arm.forward(q[None])
-    pts = arm.surface(q[None], max_per_mesh=study.max_per_mesh)[0]
-    labels = _surface_labels(arm, study.max_per_mesh)
+    per_mesh = study.max_per_mesh if max_per_mesh is None else max_per_mesh
+    pts = arm.surface(q[None], max_per_mesh=per_mesh)[0]
+    labels = _surface_labels(arm, per_mesh)
     if len(labels) != len(pts):
         labels = np.full(len(pts), "", dtype=object)
     finite = np.all(np.isfinite(pts), axis=1)
@@ -536,12 +542,14 @@ def measure(study: RestStudy, q) -> RestReport:
         hand = np.ones(len(pts), bool)
     ha, hb = abh[hand, 0], abh[hand, 1]
     e1, e2 = scene.plane_basis()
-    rel = pts - scene.point
-    in_plane = np.stack([rel @ e1, rel @ e2], 1)
-    hull_src = _hull_points(in_plane)
-    hull = convex_hull(hull_src)
-    # the hull drawn in scene (a, b): the same points, back on the plane
-    hull_ab = scene.coords(scene.point + hull[:, :1] * e1 + hull[:, 1:2] * e2)[:, :2] if len(hull) else np.zeros((0, 2))
+    if hull:
+        rel = pts - scene.point
+        hull_pts = convex_hull(_hull_points(np.stack([rel @ e1, rel @ e2], 1)))
+        # the hull drawn in scene (a, b): the same points, back on the plane
+        hull_ab = scene.coords(scene.point + hull_pts[:, :1] * e1 + hull_pts[:, 1:2] * e2)[:, :2] if len(hull_pts) else np.zeros((0, 2))
+        hull_area = polygon_area(hull_pts)
+    else:
+        hull_ab, hull_area = np.zeros((0, 2)), math.nan
     shoulder = np.isin(labels, list(study.shoulder)) if study.shoulder else np.zeros(len(pts), bool)
     lane: dict = {}
     past, past_axis = None, ""
@@ -564,7 +572,7 @@ def measure(study: RestStudy, q) -> RestReport:
         across=_interval(abh[:, 0]), along=_interval(abh[:, 1]),
         hand_across=_interval(ha), hand_along=_interval(hb),
         reach=float(max(np.max(np.abs(ha)), np.max(np.abs(hb)))),
-        hull_area=polygon_area(hull), hull=hull_ab, lane=lane, past_shoulder=past, past_axis=past_axis,
+        hull_area=hull_area, hull=hull_ab, lane=lane, past_shoulder=past, past_axis=past_axis,
     )
 
     # ---- clearance

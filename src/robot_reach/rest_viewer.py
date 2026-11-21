@@ -49,8 +49,13 @@ def _range_mm(iv) -> str:
 class RestViewer:
     ROOTS = ("/scene", "/arm", "/marks")
 
-    def __init__(self, study: RestStudy, *, host: str = "127.0.0.1", port: int = 0, out: Path | None = None, title: str | None = None):
+    def __init__(self, study: RestStudy, *, host: str = "127.0.0.1", port: int = 0, out: Path | None = None, title: str | None = None,
+                 solutions: dict | None = None):
         self.study = study
+        # goal name -> a saved solution entry (robot_reach.goals.save_solutions / Solution.to_dict + workspace_q)
+        self.solutions = dict(solutions or {})
+        self.goal = None  # the PoseGoal shown, or None
+        self.goal_ws = None  # (q (K, S, dof), valid (K, S)) of its workspace, for live readiness
         self.arm, self.scene = study.arm, study.scene
         self.out = Path(out) if out is not None else Path.cwd() / "rest-cards"
         self.lock = threading.Lock()
@@ -85,7 +90,7 @@ class RestViewer:
 
             cfg = ViewerConfig(host=host, port=port, title=title or ("Rest · " + (study.name or self.arm.name)), grid=False,
                                home_target=tuple(map(float, center)), home_distance=max(0.8, 1.9 * self.extent),
-                               home_direction=direction, dark_mode=False)
+                               home_direction=direction, dark_mode=False, control_width="large")
             self.viewer = Viewer(cfg)
             self.server = self.viewer.server
             self.viewer.camera.fit_home(tuple(np.minimum(lo, hi)), tuple(np.maximum(lo, hi)), direction=direction, margin=1.15)
@@ -211,8 +216,16 @@ class RestViewer:
         labels = [p.label for p in st.poses] or ["home"]
         self.g_pose = g.add_dropdown("Pose", tuple(labels), initial_value=labels[0], order=-90)
         self.g_pose_md = g.add_markdown("", order=-89)
-        self.g_head = g.add_html("", order=-80)
+        self.g_head = g.add_html("", order=-96)  # WHY first: the numbers are the calm answer; settings and lists fold below
         self.g_pose.on_update(lambda _e: self._pose_selected())
+        if st.goals:
+            with g.add_folder("Use case", expand_by_default=True, order=-94):
+                names = ("— none —", *[goal.name for goal in st.goals])
+                self.g_goal = g.add_dropdown("Goal", names, initial_value=names[0])
+                self.g_goal_pick = g.add_dropdown("Solution", ("—",), initial_value="—", disabled=True)
+                self.g_goal_md = g.add_markdown("<small>Pick a use case: its settings, the solved pose and the Pareto runners-up.</small>")
+            self.g_goal.on_update(lambda _e: self._goal_selected())
+            self.g_goal_pick.on_update(lambda _e: self._goal_pick_selected())
 
         with g.add_folder("Detail", expand_by_default=False, order=-70):
             self.g_detail = g.add_markdown("")
@@ -291,11 +304,12 @@ class RestViewer:
             self._show(r, jogged)
 
     def _show(self, r: RestReport, jogged: bool):
-        self.g_head.content = headline_html(r, self.study)
+        self.g_head.content = headline_html(r, self.study, readiness=self._readiness(r.q), goal=self.goal)
         self.g_detail.content = detail_markdown(r, self.study)
         code = Code(r.code)
         col = CODE_COLORS[code]
         where = f"jogged from **{html.escape(self.pose_name)}**" if jogged else f"**{html.escape(self.pose_name)}**"
+
         self.g_jog_md.content = f"<span style='color:rgb{col}'>●</span> {r.code_label} · {where} · measured in {1e3 * r.seconds:.0f} ms"
 
     def _rank(self):
@@ -321,6 +335,80 @@ class RestViewer:
         except Exception as exc:  # noqa: BLE001 - a failed export is reported in the panel, the viewer keeps running
             self.g_export_md.content = f"<small>export failed: {html.escape(repr(exc))}</small>"
 
+
+    # ================================================================== goals
+    def _goal_selected(self):
+        name = self.g_goal.value
+        self.goal = next((goal for goal in self.study.goals if goal.name == name), None)
+        self.goal_ws = None
+        for name in ("/marks/workspace", "/marks/camera"):
+            try:
+                self.server.scene.remove_by_name(name)
+            except Exception:  # noqa: BLE001, S110 - nothing drawn yet
+                pass
+        if self.goal is None:
+            self.g_goal_pick.options, self.g_goal_pick.value, self.g_goal_pick.disabled = ("—",), "—", True
+            self.g_goal_md.content = "<small>Pick a use case: its settings, the solved pose and the Pareto runners-up.</small>"
+            return
+        entry = self.solutions.get(self.goal.name)
+        if entry is not None and entry.get("workspace_q") is not None:
+            self.goal_ws = (np.asarray(entry["workspace_q"], float), np.asarray(entry["workspace_valid"], bool))
+        elif self.goal.workspace is not None:
+            from .goals import workspace_configurations
+
+            with self.arm_lock:
+                q, valid, _ = workspace_configurations(self.arm, self.goal.workspace)
+            self.goal_ws = (q, valid)
+        self._draw_workspace()
+        if entry is None or entry.get("pick") is None:
+            self.g_goal_pick.options, self.g_goal_pick.value, self.g_goal_pick.disabled = ("—",), "—", True
+            why = "not solved yet: run with --solve" if entry is None else "no pose passes its gates"
+            self.g_goal_md.content = goal_markdown(self.goal, entry, None, self.study) + f"\n\n**{why}**"
+            return
+        options = tuple(_solution_label(k, c) for k, c in enumerate(entry["pareto"]))
+        self.g_goal_pick.options = options
+        self.g_goal_pick.disabled = len(options) < 2
+        self.g_goal_pick.value = options[0]
+        self._goal_pick_selected()
+
+    def _goal_pick_selected(self):
+        if self.goal is None or self.g_goal_pick.value == "—":
+            return
+        entry = self.solutions[self.goal.name]
+        k = list(self.g_goal_pick.options).index(self.g_goal_pick.value)
+        cand = entry["pareto"][k]
+        q = np.array([cand["q_rad"][n] for n in self.arm.joint_names])
+        self.g_goal_md.content = goal_markdown(self.goal, entry, k, self.study)
+        self._apply(q, name=f"{self.goal.name} · {'pick' if k == 0 else f'runner-up {k}'}")
+
+    def _readiness(self, q):
+        if self.goal is None or self.goal_ws is None:
+            return None
+        from .goals import drive_limits, readiness
+
+        vmax, amax, _ = drive_limits(self.arm)
+        _, mean, worst = readiness(np.asarray(q, float), self.goal_ws[0], self.goal_ws[1], vmax, amax)
+        return mean, worst
+
+    def _draw_workspace(self):
+        """The goal's workspace poses (where the tool goes) and its camera, as small marks."""
+        s = self.server.scene
+        pts = []
+        if self.goal.workspace is not None and self.goal.workspace.targets is not None:
+            pts = np.asarray(self.goal.workspace.targets, float)[:, :3, 3]
+        elif self.goal_ws is not None:
+            q, valid = self.goal_ws
+            first = [q[k, int(np.argmax(valid[k]))] for k in range(len(q)) if valid[k].any()]
+            if first:
+                with self.arm_lock:
+                    T, ok = self.arm.forward(np.asarray(first))
+                pts = T[ok, :3, 3]
+        if len(pts):
+            s.add_point_cloud("/marks/workspace", np.asarray(pts, np.float32), np.array((46, 140, 84), np.uint8), point_size=0.014,
+                              point_shape="circle")
+        if self.goal.camera is not None:
+            s.add_icosphere("/marks/camera", radius=0.018, color=(70, 110, 170), position=tuple(map(float, self.goal.camera.position)))
+
     # ================================================================== scripted twins of clicks
     def select(self, name: str):
         """Choose a pose by its label or name (the scripted twin of the dropdown)."""
@@ -329,6 +417,14 @@ class RestViewer:
             raise KeyError(f"no pose {name!r}; there are {[p.label for p in self.study.poses]}")
         self.g_pose.value = p.label
         self._apply(p.q, name=p.label)
+
+    def select_goal(self, name: str, solution: int = 0):
+        """Choose a goal and one of its solutions (0 = the pick): the scripted twin of the Goal dropdowns."""
+        self.g_goal.value = name
+        self._goal_selected()
+        if solution and self.g_goal_pick.options and len(self.g_goal_pick.options) > solution:
+            self.g_goal_pick.value = self.g_goal_pick.options[solution]
+            self._goal_pick_selected()
 
     def set_joint(self, joint: str, degrees: float):
         roles = {v: k for k, v in (self.arm.meta.get("roles") or {}).items()}
@@ -372,8 +468,69 @@ class RestViewer:
 
 
 # ====================================================================== panel text
-def headline_html(r: RestReport, study: RestStudy) -> str:
-    """The three numbers, big; red only for a problem."""
+def _solution_label(k: int, cand: dict) -> str:
+    o = cand.get("objectives") or {}
+    parts = [f"score {cand['score']:.2f}" if cand.get("score") is not None else ""]
+    if o.get("energy") is not None:
+        parts.append(f"{o['energy']:.2f} W")
+    if cand.get("readiness_mean_s") is not None:
+        parts.append(f"{cand['readiness_mean_s']:.2f} s")
+    if o.get("compactness") is not None:
+        parts.append(f"{1e3 * o['compactness']:.0f} mm")
+    return ("pick" if k == 0 else f"#{k + 1}") + " · " + " · ".join(p for p in parts if p)
+
+
+def goal_markdown(goal, entry: dict | None, k: int | None, study: RestStudy) -> str:
+    """A goal's settings, how the solve went and the shown solution's numbers against its runners-up."""
+    s = goal.settings()
+    plane = study.scene.label("plane", "plane")
+    clear = ", ".join(f"{html.escape(plane if z == 'plane' else z)} {'ignored' if v is None else ('touch ok' if v == 0 else f'≥ {v:g} mm')}"
+                      for z, v in s["clearances_mm"].items())
+    torque = "held (copper W)" if goal.torque == "held" else f"limp (settles ≤ {goal.settle_deg:g}°, stays after a {goal.kick_deg:g}° kick)"
+    weights = ", ".join(f"{k_} ×{w:g}" for k_, w in goal.weights.items() if w)
+    ws = "—" if goal.workspace is None else f"{html.escape(goal.workspace.name)} ({s['workspace']['poses']} poses, {goal.workspace.stat})"
+    lines = [f"<small>{html.escape(goal.description)}</small>" if goal.description else "",
+             f"<small>**Clearances** {clear} · **torque** {torque} · **workspace** {ws} · **weights** {weights}"
+             + (f" · stop margin {goal.stop_margin_deg:g}°" if goal.stop_margin_deg else "")
+             + (f" · gates: {html.escape(', '.join(s['gates']))}" if s["gates"] else "") + "</small>"]
+    if entry is not None:
+        lines.append(f"<small>{entry['passed']} of {entry['sampled']} poses pass · solved in {entry['seconds']:.0f} s</small>")
+    if entry is not None and k is not None and entry.get("pareto"):
+        rows = ["| | score | W | ready s | hand mm |" + (" hidden % |" if goal.camera is not None else ""),
+                "|---|---:|---:|---:|---:|" + ("---:|" if goal.camera is not None else "")]
+        for i, c in enumerate(entry["pareto"][:6]):
+            o = c.get("objectives") or {}
+            mark = "▶ " if i == k else ""
+            cells = [f"{mark}{'pick' if i == 0 else f'#{i + 1}'}", "—" if c.get("score") is None else f"{c['score']:.2f}",
+                     "—" if o.get("energy") is None else f"{o['energy']:.2f}",
+                     "—" if c.get("readiness_mean_s") is None else f"{c['readiness_mean_s']:.2f}",
+                     "—" if o.get("compactness") is None else f"{1e3 * o['compactness']:.0f}"]
+            if goal.camera is not None:
+                cells.append("—" if o.get("occlusion") is None else f"{100 * o['occlusion']:.1f}")
+            rows.append("| " + " | ".join(cells) + " |")
+        lines.append("\n".join(rows))
+        cand = entry["pareto"][k]
+        if cand.get("settle"):
+            lines.append(f"<small>torque off: {html.escape(cand['settle']['how'])}, moves {cand['settle']['moved_deg']:.1f}°"
+                         + (f"; with no friction at all {cand['frictionless']['moved_deg']:.0f}° ({html.escape(cand['frictionless']['how'])})"
+                            if cand.get("frictionless") else "") + "</small>")
+        if k == 0 and entry.get("record", {}).get("description"):
+            lines.append(f"<small>*{html.escape(entry['record']['description'])}*</small>")
+    return "\n\n".join(x for x in lines if x)
+
+
+def goal_plane_gate(goal, study: RestStudy) -> float | None:
+    """The goal's least clearance over the plane (m), None when it ignores the plane."""
+    keys = {"plane", study.scene.label("plane", "plane")}
+    for k, v in goal.clearances.items():
+        if k in keys:
+            return v
+    return None
+
+
+def headline_html(r: RestReport, study: RestStudy, readiness: tuple[float, float] | None = None, goal=None) -> str:
+    """The three numbers, big (plus readiness when a goal has a workspace); red only for a problem.
+    With a goal shown, the clearance gate is the goal's, and a limp goal's energy is 0 W."""
     scene, arm = study.scene, study.arm
     roles = arm.meta.get("roles") or {}
     f, c, h = r.footprint, r.clearance, r.holding
@@ -390,14 +547,26 @@ def headline_html(r: RestReport, study: RestStudy) -> str:
         return f"<div style='color:rgb{PROBLEM};font-weight:600'>{html.escape(r.code_label)}: no geometry at this pose</div>"
     past = "" if f.past_shoulder is None else (f" · {_mm(f.past_shoulder)} mm past the shoulder" if f.past_shoulder > 0 else " · inside its lane")
     fp = cell("Footprint", _mm(f.reach), "mm", f"hand from the line · hull {f.hull_area:.2f} m²{past}", bad=bool(f.past_shoulder and f.past_shoulder > 0))
-    clear_bad = c.plane is not None and c.plane < c.threshold
+    gate = c.threshold
+    if goal is not None:
+        gate = goal_plane_gate(goal, study)
+    clear_bad = c.plane is not None and gate is not None and c.plane < gate - 1e-9
     ko_bad = any(v is not None and v < 0 for v in c.keepouts.values())
     ko = "".join(f" · {html.escape(k)} {_mm(v)} mm" for k, v in c.keepouts.items() if v is not None)
-    over = "nothing over the " + html.escape(plane) if c.plane is None else f"over the {html.escape(plane)} (gate {_mm(c.threshold)})"
+    gate_txt = "" if gate is None else (" (touch ok)" if gate == 0 else f" (gate {_mm(gate)})")
+    over = "nothing over the " + html.escape(plane) if c.plane is None else f"over the {html.escape(plane)}{gate_txt}"
     cl = cell("Clearance", "∞" if c.plane is None else _mm(c.plane), "mm", over + ko, bad=clear_bad or ko_bad)
     worst = "" if h.watts is None or h.total is None or h.total <= 0 else f" · most: {html.escape(str(roles.get(arm.joint_names[int(np.argmax(h.watts))], arm.joint_names[int(np.argmax(h.watts))])))}"
-    hp = cell("Holding", "—" if h.total is None else f"{h.total:.2f}", "W", ("copper, all joints" + worst) if h.watts is not None else "no motor model")
-    return f"<div style='display:flex;gap:6px'>{fp}{cl}{hp}</div>"
+    if goal is not None and goal.torque == "limp":
+        held = "" if h.total is None else f" · held it would cost {h.total:.2f} W"
+        hp = cell("Holding", "0", "W", "torque off (limp)" + held)
+    else:
+        hp = cell("Holding", "—" if h.total is None else f"{h.total:.2f}", "W", ("copper, all joints" + worst) if h.watts is not None else "no motor model")
+    rd = ""
+    if readiness is not None:
+        mean, worst = readiness
+        rd = cell("Readiness", "—" if not np.isfinite(mean) else f"{mean:.2f}", "s", "—" if not np.isfinite(worst) else f"mean · worst {worst:.2f} s")
+    return f"<div style='display:flex;gap:6px'>{fp}{cl}{hp}{rd}</div>"
 
 
 def detail_markdown(r: RestReport, study: RestStudy) -> str:
@@ -467,6 +636,10 @@ def cli(factory: Callable[[], RestStudy], argv=None, prog: str = "robot_reach re
     ap.add_argument("--set", action="append", default=[], metavar="JOINT=DEG", help="then jog a joint (repeatable)")
     ap.add_argument("--export", type=Path, help="write one PNG + metrics card per pose here (and index.json with the ranking)")
     ap.add_argument("--out", type=Path, help="where the viewer's Save button writes (default ./rest-cards)")
+    ap.add_argument("--solve", action="store_true", help="solve the study's goals now (saved to --solutions when given)")
+    ap.add_argument("--solutions", type=Path, help="saved goal solutions: loaded when they match the goals, written by --solve")
+    ap.add_argument("--samples", type=int, default=1500, help="joint samples per held goal for --solve (limp: a tenth)")
+    ap.add_argument("--goal", help="start on this goal's pick")
     ap.add_argument("--no-view", action="store_true")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=0)
@@ -477,9 +650,30 @@ def cli(factory: Callable[[], RestStudy], argv=None, prog: str = "robot_reach re
 
         paths = export_cards(study, a.export)
         print(f"wrote {len(paths)} cards -> {a.export}", flush=True)
+    solutions = {}
+    if study.goals:
+        from .goals import load_solutions, save_solutions, solve_all
+
+        if a.solve:
+            seeds = [p.q for p in study.poses]
+            samples = {g.name: (a.samples if g.torque == "held" else max(60, a.samples // 10)) for g in study.goals}
+            sols = solve_all(study, seeds=seeds, samples=samples, progress=lambda m: print(m, flush=True))
+            if a.solutions is not None:
+                save_solutions(study, sols, a.solutions, {k: (v.workspace_q, v.workspace_valid) for k, v in sols.items()
+                                                          if v.workspace_q is not None})
+            for name, sol in sols.items():
+                entry = sol.to_dict(study.arm)
+                if sol.workspace_q is not None:
+                    entry["workspace_q"], entry["workspace_valid"] = sol.workspace_q.tolist(), sol.workspace_valid.tolist()
+                solutions[name] = entry
+        elif a.solutions is not None and a.solutions.exists():
+            solutions = load_solutions(study, a.solutions)
+            print(f"loaded {len(solutions)} of {len(study.goals)} goal solutions from {a.solutions}", flush=True)
     if a.no_view:
         return 0
-    viewer = RestViewer(study, host=a.host, port=a.port, out=a.out)
+    viewer = RestViewer(study, host=a.host, port=a.port, out=a.out, solutions=solutions)
+    if a.goal:
+        viewer.select_goal(a.goal)
     if a.pose:
         viewer.select(a.pose)
     for item in a.set:

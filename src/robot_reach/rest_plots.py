@@ -93,9 +93,10 @@ def _drawn_points(study: RestStudy, q: np.ndarray, cap: int = 400_000):
     return pts[good], hand[good]
 
 
-def card_figure(study: RestStudy, pose: PoseChoice, report: RestReport | None = None):
+def card_figure(study: RestStudy, pose: PoseChoice, report: RestReport | None = None, goal=None):
     """A matplotlib Figure: side view (across vs height) over top view (across vs along), sharing the
-    across axis, and the card beside them."""
+    across axis, and the card beside them. With the `goal` a pose was solved for, the clearance gate is
+    the goal's and a limp goal's energy reads 0 W."""
     import textwrap
 
     import matplotlib
@@ -134,6 +135,9 @@ def card_figure(study: RestStudy, pose: PoseChoice, report: RestReport | None = 
     h_floor = float(np.min(sc.plane_height(np.array([a_lo, a_hi]), 0.0))) - 0.03
     h_top = (abh_all[:, 2].max() if len(abh_all) else 0.0) + 0.04
     plane = sc.label("plane", "plane")
+    gate = r.clearance.threshold if r.clearance is not None else None  # the scene's, or the goal's when a goal is given
+    if goal is not None:
+        gate = next((v for k, v in goal.clearances.items() if k in {"plane", plane}), None)
 
     fig = plt.figure(figsize=(12.5, 7.6), dpi=110)
     gs = fig.add_gridspec(2, 2, width_ratios=(1.5, 1.0), height_ratios=(h_top - h_floor, rb[1] - rb[0]), wspace=0.12, hspace=0.18)
@@ -168,7 +172,7 @@ def card_figure(study: RestStudy, pose: PoseChoice, report: RestReport | None = 
     if c is not None and c.lowest is not None:
         a, b, h = sc.coords(c.lowest)
         foot_h = float(sc.plane_height(a, b))
-        col = PROBLEM if c.plane < c.threshold else FINE
+        col = PROBLEM if (gate is not None and c.plane < gate - 1e-9) else FINE
         ax_s.annotate("", xy=(a, foot_h), xytext=(a, h), arrowprops={"arrowstyle": "<->", "color": col, "lw": 1.4})
         ax_s.text(a + 0.01, (h + foot_h) / 2, f"{_mm(c.plane)} mm", color=col, fontsize=9, va="center")
     ax_s.set_aspect("equal")
@@ -199,7 +203,11 @@ def card_figure(study: RestStudy, pose: PoseChoice, report: RestReport | None = 
     # ---- the card
     ax_c.axis("off")
     head = r.headline()
-    bad_clear = c is not None and c.plane is not None and c.plane < c.threshold
+    bad_clear = c is not None and c.plane is not None and gate is not None and c.plane < gate - 1e-9
+    gate_txt = "" if gate is None else (" (touching allowed)" if gate == 0 else f" (gate {_mm(gate)} mm)")
+    holding = head["holding"]
+    if goal is not None and goal.torque == "limp":
+        holding = "0 W, torque off" + ("" if r.holding.total is None else f" (held: {r.holding.total:.2f} W)")
     lines = [(pose.label, 13, "bold", "black", None)]
     for chunk in textwrap.wrap(pose.description, 52)[:5] if pose.description else []:
         lines.append((chunk, 8.5, "normal", "#555", None))
@@ -207,8 +215,8 @@ def card_figure(study: RestStudy, pose: PoseChoice, report: RestReport | None = 
         lines.append((f"digest {pose.digest}", 8.5, "normal", "#555", None))
     lines += [("", 6, "normal", "black", None),
               (f"Footprint  {head['footprint']}", 10, "bold", "black", None),
-              (f"Clearance  {head['clearance']} over the {plane} (gate {_mm(sc.min_clearance)} mm)", 10, "bold", PROBLEM if bad_clear else "black", None),
-              (f"Holding    {head['holding']}", 10, "bold", "black", None),
+              (f"Clearance  {head['clearance']} over the {plane}{gate_txt}", 10, "bold", PROBLEM if bad_clear else "black", None),
+              (f"Holding    {holding}", 10, "bold", "black", None),
               ("", 6, "normal", "black", None)]
     if f is not None:
         lines.append((f"hand across {1e3 * f.hand_across[0]:+.0f}…{1e3 * f.hand_across[1]:+.0f} mm, along {1e3 * f.hand_along[0]:+.0f}…{1e3 * f.hand_along[1]:+.0f} mm", 8, "normal", "#333", "monospace"))
@@ -238,13 +246,13 @@ def card_figure(study: RestStudy, pose: PoseChoice, report: RestReport | None = 
     return fig, r
 
 
-def save_card(study: RestStudy, pose: PoseChoice, out, report: RestReport | None = None) -> Path:
+def save_card(study: RestStudy, pose: PoseChoice, out, report: RestReport | None = None, goal=None) -> Path:
     """`<out>/<pose>.png` + `<pose>.json`; returns the PNG path."""
     import matplotlib.pyplot as plt
 
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    fig, r = card_figure(study, pose, report)
+    fig, r = card_figure(study, pose, report, goal=goal)
     stem = _slug(pose.name)
     png = out / f"{stem}.png"
     fig.savefig(png, bbox_inches="tight")

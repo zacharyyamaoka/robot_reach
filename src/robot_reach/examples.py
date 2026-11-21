@@ -59,4 +59,47 @@ def rest_example():
     )
 
 
-REST_EXAMPLES = {"shoulder3": rest_example}
+REST_EXAMPLES = {"shoulder3": rest_example}  # replaced below by the goals example (a superset)
+
+
+def goals_example():
+    """Zach's four use cases (robot_reach.goals) on the rest template: shoulder3 beside the fake belt,
+    plus the stand it is bolted to (a 'table' the arm may lie on when it is off), drive limits,
+    static friction and an overhead camera. Numbers are illustrative.
+
+    - hover_empty_belt: hover just above an empty belt (20 mm), holding power first, then readiness;
+    - sleep_limp: the machine is off: torque off, it may rest on the belt or the table;
+    - standby: another arm is picking: 120 mm over the belt, inside its lane, low power, out of the camera's view;
+    - ready_to_pick: reach every hover point over the belt fast, power second."""
+    import dataclasses
+
+    import numpy as np
+
+    from .goals import Camera, PoseGoal, Workspace
+    from .rest import KeepOut
+
+    study = rest_example()
+    arm = dataclasses.replace(study.arm, velocity_limits=(2.0, 2.0, 3.0), acceleration_limits=(6.0, 6.0, 10.0),
+                              friction=(0.05, 0.10, 0.05))
+    scene = dataclasses.replace(study.scene, keepouts=(*study.scene.keepouts, KeepOut("table", top=0.0, across=(-0.40, 0.15))))
+    # the workspace: 3 x 3 hover points 6 cm over the belt, across 0.25..0.45 m, along -0.10..0.10 m
+    grid = [(x, y) for x in (0.25, 0.35, 0.45) for y in (-0.10, 0.0, 0.10)]
+    T = np.tile(np.eye(4), (len(grid), 1, 1))
+    T[:, :3, 3] = [(x, y, -0.05 + 0.06) for x, y in grid]
+    region = np.array([(x, y, -0.05) for x in np.linspace(0.15, 0.55, 9) for y in np.linspace(-0.15, 0.15, 7)])
+    ws = Workspace("pick zone", targets=T, task="position", region=region, stat="mean")
+    cam = Camera((0.35, 0.0, 0.80), name="overhead camera")
+    goals = (
+        PoseGoal("hover_empty_belt", {"belt": 0.020, "table": 0.0}, "held", workspace=ws, weights={"energy": 3.0, "readiness": 1.0},
+                 description="Hover just above an empty belt"),
+        PoseGoal("sleep_limp", {"belt": 0.0, "table": 0.0}, "limp", workspace=ws, weights={"compactness": 2.0, "readiness": 1.0},
+                 settle_deg=3.0, description="Machine off: torque off, resting where gravity leaves it"),
+        PoseGoal("standby", {"belt": 0.120, "table": 0.0, "lane": 0.0}, "held", workspace=ws, camera=cam,
+                 weights={"energy": 2.0, "compactness": 1.0, "occlusion": 1.0}, description="Another arm is picking: clear and cheap"),
+        PoseGoal("ready_to_pick", {"belt": 0.100, "table": 0.0, "lane": 0.0}, "held", workspace=ws,
+                 weights={"readiness": 3.0, "energy": 1.0}, description="Ready to pick anywhere in the zone quickly"),
+    )
+    return dataclasses.replace(study, arm=arm, scene=scene, goals=goals, name="shoulder3 rest goals (template)")
+
+
+REST_EXAMPLES = {"shoulder3": goals_example}
