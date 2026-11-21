@@ -20,6 +20,9 @@ Conventions (the whole contract):
 - Optional geometry (``meshes`` + ``mesh_poses``): rigid parts posed per configuration, for what the
   skeleton is too crude for (clearance over a belt, the footprint). ``mesh_poses(q)``: ``(N, dof) ->
   (N, M, 4, 4)`` base->part transforms, one per entry of ``meshes`` (NaN where FK fails).
+- Optional drive limits: ``velocity_limits`` (rad/s or m/s) and ``acceleration_limits`` per joint (how
+  fast a pose reaches another: trapezoid per joint), and ``friction``: each joint's static (Coulomb)
+  friction in N·m or N, what holds a joint with its torque off. The joint limits are the hard stops.
 """
 
 from __future__ import annotations
@@ -91,6 +94,10 @@ class Arm:
     # Rigid geometry (module docstring): `ArmMesh` parts and their poses, (N, dof) -> (N, M, 4, 4).
     meshes: tuple[ArmMesh, ...] = ()
     mesh_poses: Callable[[np.ndarray], np.ndarray] | None = None
+    # Drive limits and friction (module docstring), one per joint; None = not stated.
+    velocity_limits: tuple[float, ...] | None = None
+    acceleration_limits: tuple[float, ...] | None = None
+    friction: tuple[float, ...] | None = None
 
     # ------------------------------------------------------------------ basics
     @property

@@ -38,7 +38,9 @@ arm = rr.Arm(
 
 One-pose-at-a-time functions work too: `rr.Arm.from_scalar(name, joints, lower, upper, fk, ik)`.
 Optional hooks: `skeleton` (points to draw), `mass_points` + `masses` + `torque_limits` (static
-gravity torque), `collision`, `singular` (a mechanism's own singularity test), `meta["home"]`, and
+gravity torque), `collision`, `singular` (a mechanism's own singularity test), `meta["home"]`,
+`velocity_limits` + `acceleration_limits` + `friction` (per joint: how fast a pose is reached, what holds a
+joint with its torque off), and
 `meshes` + `mesh_poses` (rigid `ArmMesh` parts posed per q: `arm.surface(q)` gives dense points for
 clearance and footprint, where the skeleton has no thickness).
 

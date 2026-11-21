@@ -205,3 +205,14 @@ def test_surface_poses_meshes_and_falls_back_to_the_skeleton():
     assert np.allclose(arm.surface(q, parts=("fore",))[0], cube + chain[1])
     assert arm.surface(q, max_per_mesh=2).shape == (1, 4, 3)
     assert arm.surface(q, parts=("nothing",)).shape == (1, 0, 3)
+
+
+def test_drive_limits_and_friction_are_optional_per_joint_fields():
+    import dataclasses
+
+    from robot_reach.robots import rr as rr_arm
+
+    arm = rr_arm()
+    assert arm.velocity_limits is None and arm.acceleration_limits is None and arm.friction is None
+    fast = dataclasses.replace(arm, velocity_limits=(2.0, 3.0), acceleration_limits=(8.0, 9.0), friction=(0.1, 0.05))
+    assert fast.velocity_limits == (2.0, 3.0) and fast.friction[1] == 0.05 and fast.dof == 2
