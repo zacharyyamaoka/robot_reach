@@ -81,7 +81,7 @@ def render(f, B, blob, mask_blob, css, js) -> str:
         ("D", "Colour scheme", f"{d_best}", "Best measured: colour-blind safe, darker-to-lighter in one direction, far from the red/purple that mean collision/singular; compas_fab's colours, run light (least) to dark (most) because the least level is the outer shell."),
         ("E", "Histogram legend + selector", "E1 Clickable bar legend", "The histogram IS the legend and the Show control: click any bar to hide it; Show follows Colour by; “unreachable” is a bar, which gives your “All”."),
         ("F", "Wizard in the Workspace panel", "F2 Used-settings card", "The fields show what the result used; editing one lights Compute workspace, hides the old map and offers Reset — exactly your flow, no new screens."),
-        ("G", "Downstream API", "G2 A <code>ReachableWorkspace</code> value in robot_msgs", "Trajectory code reads it without importing robot_reach; it samples only poses that were checked. Prototype ran on the UR5e (output below)."),
+        ("G", "Downstream API", "<a href='#g2'>G′ P1</a> attribute namespace (round 2; replaces G2)", "<code>ws.dexterous.sample()</code>, <code>ws.hemisphere.inside(belt).only(elbow=\"up\").sample_pairs()</code>: your words, IK configurations instead of branches, one object for every kind, a <code>Cell</code> for several chains. All five round-2 shapes ran on the UR5e."),
         ("H", "What the FK cloud is", "Answered below", "It is the box-maker: 20,000 random joint vectors → FK; their bounding box is the voxel grid. Colours = the joint check of each sample."),
     ]
     pick_rows = "".join(f"<tr><td><a href='#{k.lower()}'>{k}</a></td><td>{a}</td><td><b>{p}</b></td><td>{w}</td></tr>" for k, a, p, w in picks)
@@ -131,6 +131,7 @@ def render(f, B, blob, mask_blob, css, js) -> str:
 The two prototypes that are code (the IK-type message for A, the workspace API for G) run on the real UR5e result in <code>docs/proposals/</code>.
 Biggest surprise: the closed-form solver's elbow slot means “elbow up” on one shoulder side and “elbow down” on the other, so the checkboxes must be wired to the posture, not the slot.</div>
 <p class="muted small">“Today” on this page = the committed viewer (<code>8bac513</code>). The viewer agent's uncommitted work, seen in its working tree while this was built, already adds Show = All, colour by consistency, Show following Colour by, Escape to deselect and an angular-resolution line; these proposals sit on top of that and do not depend on it.</p>
+<div class="verdict"><b>New · <a href="#g2">G′ — five more API proposals (round 2)</a></b>: attribute namespace, query builder, numpy masks, sampler-first and a table of IK solutions, each run on the UR5e. <b>Pick: P1</b> — <code>ws.dexterous.sample(3, rng)</code>, <code>ws.hemisphere.inside(belt).only(elbow="up").sample_pairs(3, rng)</code> — with P2's query as its saved form.</div>
 <div class="selfcheck"></div>
 <table><tr><th></th><th>Ask</th><th>Recommended</th><th>Why</th></tr>{pick_rows}</table>
 
@@ -347,7 +348,9 @@ class ReachSettings:
     def digest(self) -> str: ...              # hash of sections 1-3 + checks: equal digest = same result</pre>
 <p class="muted small">A box result (C) carries the same object with its own box pose and angle set, so every layer says how it was made.</p>
 
+{f.get('round2_html', '')}
 <h2 id="g">G · The API downstream code uses to get a workspace</h2>
+<p class="small"><b>Round 1, kept for the record — superseded by <a href="#g2">G′</a></b>: round 2 renames “branch” to IK configuration and puts every workspace kind on one object.</p>
 <div class="ask">You: “now that I can reliably go from robot description to any of its workspaces … go like .sample() … What is the final API and robot_msg type … 3 proposals … How does this compare to what I already had?”</div>
 <div class="grid" style="grid-template-columns:1fr">
 {card("G1 A Workspace object in robot_reach", "Methods hang off the result. Simple to build; every consumer imports robot_reach.",

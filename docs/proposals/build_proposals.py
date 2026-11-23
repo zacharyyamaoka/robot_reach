@@ -318,6 +318,13 @@ for key, sc in SCHEMES.items():
 # ============================================================================== G: the API demo, run
 demo = subprocess.run([sys.executable, str(HERE / "api_demo.py")], capture_output=True, text=True, check=True).stdout
 
+# ============================================================================== G′: round 2, run in-process (one process: the host is near its memory cap)
+sys.path.insert(0, str(HERE / "round2"))
+import page_round2  # noqa: E402
+import run_round2  # noqa: E402
+
+round2 = run_round2.run(res, sol_type)
+
 # ============================================================================== page
 data = {
     "P": P, "O": O, "step": step, "origin": origin.tolist(), "n": (gidx.max(0) + 1).tolist(),
@@ -337,7 +344,7 @@ facts = {
     "checks": checks, "saved_mismatch": saved_mismatch, "eps_deg": float(np.degrees(EPS)),
     "cons_counts": {int(k): int((consistency == k).sum()) for k in range(4)}, "range_facts": range_facts,
     "sel_n": len(sel_rows), "sel_pos": np.round(m.positions[p_sel], 3).tolist(), "per_type": np.bincount(sol_type, minlength=8).tolist(),
-    "config": res.config, "metrics": metrics, "demo": demo,
+    "config": res.config, "metrics": metrics, "demo": demo, "round2_html": page_round2.render(round2),
 }
 blob = b64gz(json.dumps(data, separators=(",", ":")).encode())
 mask_blob = b64gz(mask.tobytes())
