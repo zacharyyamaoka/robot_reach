@@ -33,7 +33,7 @@ from .codes import Code
 
 
 # Worst first: the failure a never-OK sweep cell is labelled with when its postures fail in mixed ways.
-FAILURE_PRECEDENCE = (Code.SINGULAR, Code.COLLISION, Code.TORQUE_LIMIT, Code.FK_FAIL, Code.FK_MISMATCH, Code.JOINT_LIMIT, Code.NO_SOLUTION)
+FAILURE_PRECEDENCE = (Code.SINGULAR, Code.SELF_COLLISION, Code.ENVIRONMENT_COLLISION, Code.COLLISION, Code.TORQUE_LIMIT, Code.FK_FAIL, Code.FK_MISMATCH, Code.JOINT_LIMIT, Code.NO_SOLUTION)
 
 
 def joint_label(names, index: int) -> str:
@@ -226,12 +226,33 @@ class JointRanges:
     hist: np.ndarray | None  # (dof, B) counts of OK solutions per bin
 
 
-def joint_ranges(arm: Arm, reach=None, bins: int = 60) -> JointRanges:
+BIN_DEG = 10.0  # joint-range histogram bin width
+
+
+def range_edges(limits: np.ndarray, bin_deg: float = BIN_DEG) -> np.ndarray:
+    """(dof, B+1) histogram edges: one lattice of `bin_deg` bins (aligned to 0) spanning every joint's
+    limits, the same for each joint so the rows share one angle axis."""
+    step = np.deg2rad(bin_deg)
+    lo = np.floor(np.min(limits[:, 0]) / step - 1e-9) * step
+    hi = np.ceil(np.max(limits[:, 1]) / step + 1e-9) * step
+    edges = np.arange(lo, hi + step / 2, step)
+    return np.tile(edges, (len(limits), 1))
+
+
+def joint_ranges(arm: Arm, reach=None, bin_deg: float = BIN_DEG) -> JointRanges:
+    """Per joint, the range the working IK solutions use and a histogram of their angles in `bin_deg`
+    bins (Zach's pick, 2026-11-23: "B2 one histogram per joint that is clearer")."""
     lim = arm.limits
     if reach is None or len(reach.sol_q) == 0:
         return JointRanges(arm.joint_names, lim, None, None, None)
-    q = reach.sol_q.astype(float)
+    return ranges_of(arm.joint_names, lim, reach.sol_q.astype(float), bin_deg)
+
+
+def ranges_of(names, limits: np.ndarray, q: np.ndarray, bin_deg: float = BIN_DEG) -> JointRanges:
+    """`JointRanges` of a set of working postures (the viewer re-runs it on a filtered map)."""
+    if not len(q):
+        return JointRanges(tuple(names), limits, None, None, None)
     used = np.stack([q.min(0), q.max(0)], axis=1)
-    edges = np.stack([np.linspace(lo, hi, bins + 1) for lo, hi in lim])
-    hist = np.stack([np.histogram(q[:, j], bins=edges[j])[0] for j in range(arm.dof)])
-    return JointRanges(arm.joint_names, lim, used, edges, hist)
+    edges = range_edges(limits, bin_deg)
+    hist = np.stack([np.histogram(q[:, j], bins=edges[j])[0] for j in range(q.shape[1])])
+    return JointRanges(tuple(names), limits, used, edges, hist)

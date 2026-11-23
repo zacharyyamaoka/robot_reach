@@ -38,6 +38,7 @@ import numpy as np
 
 from .arm import Arm, Task
 from .codes import Code
+from .configurations import looks_like_ur
 
 MOVABLE = ("revolute", "continuous", "prismatic")
 TWO_PI = 2 * np.pi
@@ -836,6 +837,14 @@ def arm_from_urdf(
         kwargs["tool_offset"] = None if offset is None else offset.tolist()
         meta["factory"] = ["robot_reach.urdf", "arm_from_urdf", kwargs]
     solver_text = "numeric IK" if ik is None else "given IK"
+    meta["joint_axes"] = lambda q: chain._walk(q)[1:]
+    configurations = None
+    if chain.dof == 6 and looks_like_ur(chain.joint_names):
+        from .configurations import ur_configurations
+
+        # WHY recognised by joint names: a UR description is the one 6R family this library can name
+        # without being told; any other arm passes `configurations` itself (dataclasses.replace).
+        configurations = ur_configurations(chain.joint_names, meta["joint_axes"])
     return Arm(
         name=name,
         joint_names=chain.joint_names,
@@ -850,6 +859,7 @@ def arm_from_urdf(
         meta=meta,
         meshes=arm_meshes,
         mesh_poses=mesh_poses,
+        configurations=configurations,
     )
 
 
@@ -914,7 +924,7 @@ def analyze_chains(source, tips=None, *, floor_z: float | None = None, quick: bo
         if quick:
             if arm.task != "position":
                 kw.setdefault("orientations", OrientationSet.sample(tilt_step_deg=60.0, n_rolls=4))
-            if "step" not in kw and "box" not in kw:
+            if "step" not in kw and "box" not in kw and "steps_across" not in kw:
                 kw["step"] = _quick_step(arm)
         results[f"{tip} ({dof} DOF)"] = analyze(arm, floor_z=floor_z, **kw)
     return results

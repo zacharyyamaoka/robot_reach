@@ -11,12 +11,15 @@ Opens one viewer with seven arms behind an **Arm** dropdown: a 1-DOF pendulum, a
 five-bar, a 3-DOF shoulder (yaw + RR), a 6-DOF UR5e (closed form, skeleton) and two arms loaded from
 stock URDFs with their meshes: **ur5e (URDF)** and **ur5e + 2F-85 (URDF)** (the Robotiq 2F-85 on
 `tool0`; the reach is of its TCP, 0.150 m along the gripper, mid finger pad). Click a voxel to put the
-arm there, then **Next ▶** walks every (orientation, IK branch) that works at that point; Esc or a
+arm there, then **Next ▶** walks every (orientation, IK solution) that works at that point; Esc or a
 click on empty space deselects.
+
+The gallery computes on a coarse grid so the first launch is quick (all seven arms, measured
+2026-11-23: see *Timing* below); the Workspace panel's settings card recomputes any arm finer in place.
 
 The URDF arms read robotdescription.com's gallery builds in place (`examples.UR5E_URDF`,
 `ROBOTIQ_2F85_URDF`; env `ROBOT_REACH_UR5E_URDF` / `ROBOT_REACH_ROBOTIQ_2F85_URDF`). Their first run
-takes ~1.5 min each (numeric IK), then is reused from `out/`. UR's visual meshes are `.dae`, which
+takes ~10-20 s each on the gallery's coarse grid (numeric IK), then is reused from `out/`. UR's visual meshes are `.dae`, which
 trimesh reads only with pycollada, so run with `--with pycollada` for them; without it the viewer
 draws the URDF collision meshes and says so:
 
@@ -30,7 +33,7 @@ uv run --project /home/bam/robot_reach --extra viz --with pycollada python -m ro
 import robot_reach as rr
 from robot_reach.robots import ur5e
 
-result = rr.analyze(ur5e(), floor_z=0.0)   # FK cloud + reach map + joint maps + joint ranges
+result = rr.analyze(ur5e())                 # FK cloud + reach map + joint maps + joint ranges
 result.save("out/ur5e")                     # the result log: npz + result.json, no pickle
 rr.load("out/ur5e").display()               # viser; the arm is rebuilt from its recorded factory
 ```
@@ -43,39 +46,58 @@ arm = rr.Arm(
     joint_names=("q1", "q2", "q3"),
     lower=(-3.0, -1.0, -2.5),
     upper=(3.0, 2.0, 2.5),
-    fk=my_fk,      # (N, dof) -> (N, 4, 4)            [or ((N,4,4), ok) when FK can fail]
-    ik=my_ik,      # (N, 4, 4) -> (q (N, S, dof), code (N, S))   every branch, a Code each
+    fk=my_fk,      # (N, dof) -> (N, 4, 4)   [or ((N,4,4), ok) / ((N,4,4), code) when FK can fail]
+    ik=my_ik,      # (N, 4, 4) -> (q (N, S, dof), code (N, S))   every IK solution, a Code each
     task="position",                       # "pose" (6-DOF), "axis" (5-DOF), "position"
 )
 ```
 
 One-pose-at-a-time functions work too: `rr.Arm.from_scalar(name, joints, lower, upper, fk, ik)`.
 Optional hooks: `skeleton` (points to draw), `mass_points` + `masses` + `torque_limits` (static
-gravity torque), `collision`, `singular` (a mechanism's own singularity test), `meta["home"]`,
+gravity torque), `singular` (a mechanism's own singularity test), `configurations` (names the IK
+solutions, below), `collision` (a thin adapter, below), `meta["home"]`,
 `velocity_limits` + `acceleration_limits` + `friction` (per joint: how fast a pose is reached, what holds a
 joint with its torque off), and
 `meshes` + `mesh_poses` (rigid `ArmMesh` parts posed per q: `arm.surface(q)` gives dense points for
 clearance and footprint, where the skeleton has no thickness).
 
-The library re-checks everything an IK claims: joint limits (trying the ±2π twin of revolute
-joints), the FK round trip, duplicate branches, collision, torque and singularity. A lazy solver
-cannot overclaim.
+The library re-checks what it can from the maths alone: joint limits (trying the ±2π twin of revolute
+joints), the FK round trip, duplicate solutions, torque and singularity. A lazy solver cannot overclaim.
+
+**Collision is your FK/IK's job.** robot_reach has no collision model; it enumerates and colours the
+reasons it is handed. Your IK returns `Code.SELF_COLLISION` / `Code.ENVIRONMENT_COLLISION` (or plain
+`Code.COLLISION`) for a solution, your FK returns them per posture (`fk(q) -> (T, code)`), and every view
+shows them. `Arm.collision` is an optional thin adapter for a separate checker (`(N, dof) -> bool` or
+codes), folded into the same codes. `analyze(..., floor_z=)` is a convenience floor plane for toy arms
+(environment collision on the skeleton's points); the UR examples have none: the arm is in free space.
+
+**The TCP is whatever your FK/IK return.** Reach is measured for that frame: the `ur5e + 2F-85` example's
+FK ends at the gripper's `tcp` link, so its map is the fingers', not the flange's. One serial chain per
+`Arm` today; several chains (two arms, an arm and a leg) are a planned extension, each its own `Arm` until then.
+
+**IK configurations.** An arm may name what tells its IK solutions apart (`Arm.configurations`, a
+`robot_reach.configurations.IKConfigurations`): the UR5e's are shoulder front/back × elbow up/down × wrist
+J5+/J5− (a UR URDF gets them too). Every working solution is tagged from its own posture, never from the
+solver's slot (the closed-form slot's elbow sign flips meaning with the shoulder), saved as
+`ReachMap.sol_config`, and `ReachMap.filtered(cfg.allowed(elbow="up"))` is the map with only those.
 
 ## What you see
 
 **Cartesian.** Grid points (bounded by the FK cloud, so nobody guesses the extent) × one shared
-orientation set (22 approach directions × 6 rolls = 132 by default). Every point gets a level —
-how many pose DOF the arm controls there:
+orientation set (22 approach directions × 6 rolls = 132 by default). The grid is the FK cloud's
+bounding-box lattice kept inside the tightest of four shapes (box, sphere, cylinder, convex hull), padded by
+one voxel, so every FK point is inside and no IK is spent on corners (UR5e: 1,420 points instead of the box's
+2,197). Every point gets a workspace level:
 
-| Level | Name | Meaning |
-|---|---|---|
-| 3 | reachable | at least one orientation works |
-| 4 | 4-DOF | straight-down approach at every yaw (top-down picking) |
-| 5 | hemisphere | every approach within 90° of the reference, every roll |
-| 6 | dexterous | every sampled orientation |
+| Workspace | Meaning |
+|---|---|
+| reachable | at least one orientation works |
+| top-down | straight down along the approach axis, at every yaw (top-down picking) |
+| hemisphere | every approach in the hemisphere around the approach axis, every roll |
+| dexterous | every sampled orientation |
 
-All four are masks over one map. The approach direction is yours (`OrientationSet.sample(approach=...)`,
-or the **Approach** dropdown in the viewer's Ask here panel).
+Nested: each includes the next. All four are masks over one map. The approach direction is yours
+(`OrientationSet.sample(approach=...)`, or the Ask-here box's frame in the viewer).
 
 **Joint space.** The 2R picture for any pair of joints: **slice** (others held at home) or **sweep**
 (each cell = 48 postures of the other joints, uniform over their full limits or over ranges you pick
@@ -83,31 +105,39 @@ in the viewer's **Sweep: other joints' ranges**). A sweep cell is, worst first: 
 *always collision* (every posture fails that way: the two joints alone decide it, like a collision
 matrix), *never OK* (pale: its worst failure, singular › collision › other), *OK for some* (shade =
 share of postures), *OK for all*. A 1-DOF arm gets a line with its gravity torque against the motor
-limit. Plus one bar per joint: limits vs the range the working IK solutions actually use. Every joint
-name carries its chain index: `shoulder_lift_joint (J2)`.
+limit. Plus **joint ranges**: one histogram per joint (10° bins, bar height = share of the working IK
+solutions at that angle, the grey band = the limits). Every joint name carries its chain index:
+`shoulder_lift_joint (J2)`.
 
 **Codes** (one vocabulary for every view): OK, no IK solution, outside joint limits, singular,
-collision, over torque limit, FK(IK) mismatch, linkage cannot close. Empty is white; only problems
-are saturated.
+collision, self-collision, environment collision, over torque limit, FK(IK) mismatch, linkage cannot
+close. Empty is white; only problems are saturated.
 
-**Workspace panel.** *Colour by* pose DOF, IK solutions, fraction of orientations or **consistency**
-(did FK of every IK answer land back on its target: matched / some mismatched / all mismatched / no
-answer to check). *Show* follows the colouring and always offers **All**: every sampled grid point,
-the empty ones light grey. The FK cloud explains itself next to its checkbox: random joint postures
-through FK, whose bounding box is the grid the voxels are computed on; its colours are each posture's
-own joint-space check. *Selected point* and *Ask here* state the angular resolution behind "N / M
-orientations" (e.g. `approach -z: tilt 0…180° in 45° rings (22 directions) × roll 0…300° every 60°
-(6 rolls) = 132 orientations`).
+**Workspace panel.** A **settings card** on top: the voxel size, grid shape, orientation step, roll step
+and tilt range the map was computed with (all saved in `result.json`'s `config.settings`). Edit one and
+**Compute workspace** lights up while the old map hides; **Reset** goes back. *Colour by* workspace, IK
+solutions, fraction of orientations or **consistency** (did FK of every IK answer land back on its target).
+Heat maps use a perceptual colormap — viridis by default, or magma, plasma, inferno, cividis, and
+**Reverse** — and consistency is a traffic light (green matched, amber some mismatched, red all). The
+legend is a list: one row per bin with its swatch, label and count; untick a row to hide that bin (the
+"nothing works" row starts hidden). The FK cloud explains itself next to its checkbox. *Selected point*
+and *Ask here* state the angular resolution behind "N / M orientations".
 
-**Robot model.** For an arm with meshes: *Show mesh* visual / collision / both / none and *Opacity*.
-A colliding pose (Jog) marks the skeleton points under the floor and the parts in contact red, and
-shows their collision mesh whatever Show says. The panel states what the check really uses: the floor
-tested on the skeleton's joint points, not the meshes (no self-collision model yet).
+**IK configurations panel.** One row per question (shoulder front/back, elbow up/down, wrist J5+/J5−),
+two toggles each; every question keeps at least one answer (pressing the only lit one swaps to the
+other). It filters the selected point's solution stepper (which names each solution's configuration),
+the map, its counts and the joint-range histograms.
+
+**Robot model.** For an arm with meshes: *Show mesh* visual / collision / both / none, *Opacity* and
+*Show skeleton*. A pose whose code is a collision marks the parts in contact red (from the floor plane, when
+one is set) and shows their collision mesh whatever Show says.
 
 **Viewer extras.** Cut plane (look inside the shell), blob (voxel boundary surface: keeps holes and
 separate bodies, unlike a convex hull), FK cloud, Jog sliders with the live code and torque, and
-**Ask here**: drag a box and **Compute box** samples it finer; **Drop POI** checks every orientation
-at one point and draws a green/grey spike per approach.
+**Ask here**: a box you move *and tilt* in the 3-D view with the gizmo (or type its centre and roll /
+pitch / yaw); its −Z is the approach (straight down when level); *Angles up to*, *Tilt step* and *Roll step*
+set its orientation set, shown with the Python line that runs. **Compute box** samples it finer; **Drop
+POI** checks every orientation at its centre and draws a green/grey spike per approach.
 
 ## Any URDF or RobotDescription, every kinematic chain
 
@@ -116,11 +146,11 @@ from robot_reach.urdf import analyze_chains, arm_from_description, arm_from_urdf
 
 chains(desc)                                   # [(base, tip, dof), ...] — desc, URDF path or XML
 arm = arm_from_description(desc, "ee_link")    # duck-typed: only calls desc.to_urdf_string()
-results = analyze_chains(desc, floor_z=0.0)    # {"ee_link (6 DOF)": ReachResult, ...}
+results = analyze_chains(desc)                 # {"ee_link (6 DOF)": ReachResult, ...}
 ```
 
 ```bash
-uv run --project /home/bam/robot_reach --extra viz python -m robot_reach urdf /abs/path/robot.urdf --floor 0.0
+uv run --project /home/bam/robot_reach --extra viz python -m robot_reach urdf /abs/path/robot.urdf
 ```
 
 FK comes from the URDF with stdlib XML + numpy (revolute, continuous, prismatic, mimic).
@@ -247,23 +277,28 @@ script. Its numbers match the 2026-11-20 W1-plumb study on all 11 of its poses w
 from robot_reach.overlay import add_reach_map
 
 overlay = add_reach_map(server, result.reach, parent_frame="/facility/robot_1")
-overlay.kind = "four_dof"      # reachable | four_dof | hemisphere | dexterous
+overlay.kind = "four_dof"      # reachable | four_dof (top-down) | hemisphere | dexterous
+overlay.update(color_by="IK solutions", colormap="magma", hidden={"0"})   # legend bins: overlay.bins
 overlay.visible = False
 ```
 
 Imports nothing from viser and uses only calls present in viser 1.0.16 and 1.1.1.
 
-## Examples (measured 2026-11-19, one process)
+## Examples (measured 2026-11-23, one process, `taskset -c 2-5,16,17` on a loaded host)
 
-| Arm | DOF | IK branches | Grid | Time |
+The gallery's first run computes every arm before the viewer opens: **~1 min** for all seven (was
+2 min 46 s on the same cores before the coarse gallery grid and the shape-fitted grid). Recompute any arm
+finer from its settings card.
+
+| Arm | DOF | IK solutions | Grid (shape) | Time |
 |---|---|---|---|---|
-| pendulum | 1 | 1 | — (workspace is a circle: FK cloud) | 0.1 s |
-| rr | 2 | 2 | 1,476 points | 0.3 s |
-| five_bar | 2 | 4 | 1,517 points | 0.4 s |
-| shoulder3 | 3 | 4 | 5,776 points | 1.2 s |
-| ur5e | 6 | 8 | 6,859 points × 132 orientations | ~20 s (1.0 M valid solutions) |
-| ur5e (URDF), numeric IK (2026-11-23) | 6 | up to 8 | 2,744 points × 48 orientations | 86 s |
-| ur5e + 2F-85 (URDF), TCP | 6 | up to 8 | 2,366 points × 48 orientations | 84 s |
+| pendulum | 1 | 1 | — (workspace is a circle: FK cloud) | 0.5 s |
+| rr | 2 | 2 | 1,266 points (hull; box 1,476) | 0.5 s |
+| five_bar | 2 | 4 | 1,142 points (hull) | 0.5 s |
+| shoulder3 | 3 | 4 | 3,847 points (hull; box 5,776) | 1.2 s |
+| ur5e | 6 | 8 | 1,420 points (hull; box 2,197) × 132 orientations | 13–21 s |
+| ur5e (URDF), numeric IK | 6 | up to 8 | 685 points (hull; box 1,000) × 48 orientations | ~21 s |
+| ur5e + 2F-85 (URDF), TCP | 6 | up to 8 | 682 points (hull; box 1,000) × 48 orientations | ~22 s |
 
 ## What v2 kept from bam_reach v1 (bam_ws, July 2026)
 

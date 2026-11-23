@@ -9,12 +9,22 @@ functions for convenience.
 Conventions (the whole contract):
 
 - ``fk(q)``: ``(N, dof) -> (N, 4, 4)`` homogeneous base->tool poses, or ``((N, 4, 4), ok)`` with a
-  ``(N,)`` bool when FK can fail (a parallel linkage that cannot close).
+  ``(N,)`` bool when FK can fail (a parallel linkage that cannot close), or ``((N, 4, 4), code)`` with
+  ``(N,)`` ints from `robot_reach.codes.Code`: ``OK``, ``FK_FAIL`` (no pose), or a failure your FK
+  knows about the posture, such as ``SELF_COLLISION`` / ``ENVIRONMENT_COLLISION`` (the pose is still
+  valid; the posture is not usable).
 - ``ik(T)``: ``(N, 4, 4) -> (q, code)`` with ``q`` ``(N, S, dof)`` and ``code`` ``(N, S)`` ints from
-  `robot_reach.codes.Code`. **Return every branch** (S = the arm's solution count: 2 for an elbow,
-  8 for a UR). An unused slot is ``Code.PAD``. The solver may report ``NO_SOLUTION`` or its own
-  ``JOINT_LIMIT`` etc.; the library re-checks limits, the FK round trip, collision, torque and
-  singularity itself, so a lazy solver cannot overclaim.
+  `robot_reach.codes.Code`. **Return every IK solution** (S = the arm's solution count: 2 for an elbow,
+  8 for a UR). An unused slot is ``Code.PAD``. The solver may report ``NO_SOLUTION``,
+  ``SELF_COLLISION``, ``ENVIRONMENT_COLLISION`` or its own ``JOINT_LIMIT`` etc.; the library re-checks
+  what it can from the maths alone (limits, the FK round trip, torque, singularity), so a lazy solver
+  cannot overclaim.
+- **Collision lives in your FK/IK** (Zach, 2026-11-23): this library has no collision model; it
+  enumerates and colours the codes it is handed. `collision` is an optional thin adapter for a
+  separate checker, folded into the same codes.
+- **The tool frame is whatever your FK/IK return** (a gripper's TCP, a flange): reach is measured for
+  that frame. One serial chain per `Arm` today; several chains (two arms, an arm and a leg) are a
+  planned extension, each its own `Arm` until then.
 - The tool's local +Z is the approach axis (what "4-DOF" and "hemisphere" are measured against).
 - Units: SI, joint angles in radians. Views show degrees.
 - Optional geometry (``meshes`` + ``mesh_poses``): rigid parts posed per configuration, for what the
@@ -82,7 +92,9 @@ class Arm:
     mass_points: Callable[[np.ndarray], np.ndarray] | None = None
     masses: tuple[float, ...] = ()
     torque_limits: tuple[float, ...] | None = None  # N·m per joint
-    # Self/scene collision: (N, dof) -> (N,) bool. None = not checked (never assumed free).
+    # Optional thin adapter for a separate collision checker, folded into the codes: (N, dof) -> (N,) bool
+    # (True = Code.COLLISION) or (N,) Code ints (Code.OK = free, SELF_COLLISION, ENVIRONMENT_COLLISION).
+    # Prefer returning these codes from your FK/IK. None = not checked here (never assumed free).
     collision: Callable[[np.ndarray], np.ndarray] | None = None
     # Mechanism-specific singularity test, (N, dof) -> (N,) bool (e.g. a five-bar's transmission
     # angle). ORed with the generic manipulability test.
@@ -98,6 +110,9 @@ class Arm:
     velocity_limits: tuple[float, ...] | None = None
     acceleration_limits: tuple[float, ...] | None = None
     friction: tuple[float, ...] | None = None
+    # Optional: the questions that tell this arm's IK solutions apart ("elbow up or down") and the
+    # function that answers them from a posture (`robot_reach.configurations.IKConfigurations`).
+    configurations: object | None = None
 
     # ------------------------------------------------------------------ basics
     @property
@@ -116,22 +131,34 @@ class Arm:
 
     # ------------------------------------------------------------------ FK / IK
     def forward(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """(N, dof) -> (T (N,4,4), ok (N,)). Chunked; normalises both FK return styles."""
+        """(N, dof) -> (T (N,4,4), ok (N,)): ok = FK gave a pose. Chunked; normalises every FK return
+        style. A posture your FK flags (a self-collision) still has a pose: see `forward_codes`."""
+        T, code = self.forward_codes(q)
+        return T, code != Code.FK_FAIL
+
+    def forward_codes(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(N, dof) -> (T (N,4,4), code (N,) int8): ``OK``, ``FK_FAIL`` (no pose) or the failure your FK
+        returned for that posture (``SELF_COLLISION``, ...)."""
         q = np.atleast_2d(np.asarray(q, float))
-        Ts, oks = [], []
+        Ts, codes = [], []
         for start in range(0, len(q), CHUNK):
             out = self.fk(q[start : start + CHUNK])
             if isinstance(out, tuple):
-                T, ok = out
-                ok = np.asarray(ok, bool)
+                T, flag = out
+                T, flag = np.asarray(T, float), np.asarray(flag)
+                if flag.dtype == bool:
+                    code = np.where(flag, int(Code.OK), int(Code.FK_FAIL)).astype(np.int8)
+                else:
+                    code = flag.astype(np.int8)
             else:
-                T = out
-                ok = np.all(np.isfinite(np.asarray(T, float).reshape(len(T), -1)), axis=1)
-            Ts.append(np.asarray(T, float))
-            oks.append(ok)
+                T = np.asarray(out, float)
+                code = np.where(np.all(np.isfinite(T.reshape(len(T), -1)), axis=1), int(Code.OK), int(Code.FK_FAIL)).astype(np.int8)
+            code[(code != Code.FK_FAIL) & ~np.all(np.isfinite(T.reshape(len(T), -1)), axis=1)] = Code.FK_FAIL
+            Ts.append(T)
+            codes.append(code)
         if not Ts:
-            return np.zeros((0, 4, 4)), np.zeros(0, bool)
-        return np.concatenate(Ts), np.concatenate(oks)
+            return np.zeros((0, 4, 4)), np.zeros(0, np.int8)
+        return np.concatenate(Ts), np.concatenate(codes)
 
     def inverse(self, T: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """(N, 4, 4) -> (q (N, S, dof), code (N, S)). Chunked; pads every chunk to the same S."""
@@ -260,18 +287,19 @@ class Arm:
         torque: bool = True,
     ) -> np.ndarray:
         """Classify joint configurations, (N,) codes. First failing check wins, in this order:
-        joint limit, FK fails, collision, torque, singular, else OK."""
+        joint limit, what FK returns (no pose, or your FK's own failure such as a self-collision), the
+        collision adapter / floor, torque, singular, else OK."""
         q = np.atleast_2d(np.asarray(q, float))
         code = np.full(len(q), int(Code.OK), np.int8)
         code[~self.within_limits(q)] = Code.JOINT_LIMIT
-        _, ok = self.forward(q)
-        code[(code == Code.OK) & ~ok] = Code.FK_FAIL
+        _, fk_code = self.forward_codes(q)
+        code = np.where(code == Code.OK, fk_code, code).astype(np.int8)
         live = code == Code.OK
         if live.any():
-            hit = self.collides(q[live], floor_z=floor_z)
+            hit = self.collision_codes(q[live], floor_z=floor_z)
             if hit is not None:
                 sub = code[live]
-                sub[hit] = Code.COLLISION
+                sub[hit != Code.OK] = hit[hit != Code.OK]
                 code[live] = sub
         live = code == Code.OK
         if torque and live.any() and self.torque_limits is not None:
@@ -303,14 +331,25 @@ class Arm:
 
     def collides(self, q: np.ndarray, *, floor_z: float | None = None) -> np.ndarray | None:
         """(N,) bool, or None when nothing was checked (unknown is not 'free')."""
-        hit = None
+        code = self.collision_codes(q, floor_z=floor_z)
+        return None if code is None else code != Code.OK
+
+    def collision_codes(self, q: np.ndarray, *, floor_z: float | None = None) -> np.ndarray | None:
+        """(N,) Code ints from the optional adapters, or None when nothing was checked: the `collision`
+        hook (bool -> ``COLLISION``, or its own codes) and the optional floor plane (a skeleton point
+        under ``floor_z`` -> ``ENVIRONMENT_COLLISION``). The floor is a convenience for toy arms; a real
+        arm's collisions come back from its FK/IK."""
+        code = None
         if self.collision is not None:
-            hit = np.asarray(self.collision(q), bool)
+            out = np.asarray(self.collision(q))
+            code = np.where(out, int(Code.COLLISION), int(Code.OK)).astype(np.int8) if out.dtype == bool else out.astype(np.int8)
         if floor_z is not None:
             pts = self.chain(q)[:, 1:, :]  # the base point is fixed; only moving points can hit
             below = np.any(pts[..., 2] < floor_z - 1e-9, axis=1)
-            hit = below if hit is None else (hit | below)
-        return hit
+            if code is None:
+                code = np.full(len(below), int(Code.OK), np.int8)
+            code[below & (code == Code.OK)] = Code.ENVIRONMENT_COLLISION
+        return code
 
     # ------------------------------------------------------------------ convenience
     @classmethod

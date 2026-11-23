@@ -9,6 +9,12 @@ Two ways to find a workspace, used together:
 
 WHY the FK cloud bounds the default grid (kept from bam_reach v1, "FK sampling creates a
 conservative centered grid"): no one has to guess the arm's extent, and the grid never clips it.
+
+WHY the tightest of four shapes (Zach, 2026-11-23: "improve the initial voxel algorithm ... perhaps do
+like a convex hull, or sphere, or cylinder, or rectangle? what ever fits best ... and then add just a
+bit of padding"): `fit_grid` keeps the lattice of the v1 bounding box and drops the lattice points
+outside the best-fitting shape, padded by one grid step, so every FK point is still inside and the
+reach map spends no IK on corners the arm cannot reach.
 """
 
 from __future__ import annotations
@@ -84,6 +90,118 @@ class Box:
         size = hi - lo
         size = np.where(size < flat_tol, 0.0, size + 2 * margin)
         return cls(tuple((lo + hi) / 2), tuple(size))
+
+
+# --------------------------------------------------------------------------- grid shapes
+HULL_DIRECTIONS = 98  # planes of the convex-hull fit (a k-DOP: an outer approximation of the hull)
+
+
+def _sphere_directions(n: int) -> np.ndarray:
+    """(n, 3) roughly even unit vectors (Fibonacci sphere), deterministic."""
+    i = np.arange(n) + 0.5
+    z = 1 - 2 * i / n
+    r = np.sqrt(np.maximum(0.0, 1 - z * z))
+    phi = np.pi * (3 - np.sqrt(5)) * i
+    return np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=1)
+
+
+@dataclass(frozen=True)
+class GridShape:
+    """The volume the reach grid is kept inside: ``box`` (v1), ``sphere``, ``cylinder`` (vertical axis)
+    or ``hull`` (the FK cloud's convex hull, approximated from outside by `HULL_DIRECTIONS` planes).
+    Every number is in the arm's base frame, m; ``pad`` is already included."""
+
+    kind: str
+    center: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    radius: float = 0.0  # sphere, cylinder
+    z_range: tuple[float, float] = (0.0, 0.0)  # cylinder
+    box: Box | None = None  # box: the padded bounding box
+    normals: np.ndarray | None = None  # hull: (K, 3) unit normals
+    offsets: np.ndarray | None = None  # hull: (K,) support distances (pad included)
+
+    def contains(self, p: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+        p = np.asarray(p, float).reshape(-1, 3)
+        if self.kind == "box":
+            return self.box.contains(p, pad=tol)
+        if self.kind == "sphere":
+            return np.linalg.norm(p - np.asarray(self.center), axis=1) <= self.radius + tol
+        if self.kind == "cylinder":
+            rho = np.linalg.norm(p[:, :2] - np.asarray(self.center[:2]), axis=1)
+            return (rho <= self.radius + tol) & (p[:, 2] >= self.z_range[0] - tol) & (p[:, 2] <= self.z_range[1] + tol)
+        if self.kind == "hull":
+            return np.all(p @ self.normals.T <= self.offsets + tol, axis=1)
+        raise ValueError(f"unknown grid shape {self.kind!r}")
+
+    def describe(self) -> str:
+        if self.kind == "sphere":
+            return f"sphere r {self.radius:.3f} m"
+        if self.kind == "cylinder":
+            return f"cylinder r {self.radius:.3f} m, z {self.z_range[0]:+.3f}…{self.z_range[1]:+.3f} m"
+        if self.kind == "hull":
+            return f"convex hull ({len(self.normals)} planes)"
+        return "box " + " × ".join(f"{v:.3f}" for v in self.box.size) + " m"
+
+    def to_json(self) -> dict:
+        out = {"kind": self.kind, "center": list(self.center), "radius": self.radius, "z_range": list(self.z_range)}
+        if self.box is not None:
+            out["box"] = {"center": list(self.box.center), "size": list(self.box.size)}
+        if self.normals is not None:
+            out["normals"], out["offsets"] = self.normals.tolist(), self.offsets.tolist()
+        return out
+
+
+def fit_shapes(points: np.ndarray, pad: float) -> dict[str, GridShape]:
+    """Every candidate shape around `points`, each padded by `pad` (m)."""
+    points = np.asarray(points, float).reshape(-1, 3)
+    lo, hi = points.min(0), points.max(0)
+    box = Box.around(points)
+    padded = Box(box.center, tuple(s + 2 * pad if s > 0 else 0.0 for s in box.size))
+    out = {"box": GridShape("box", tuple(box.center), box=padded)}
+    # sphere: the smallest of the bbox centre, the centroid and a Badoiu-Clarkson minimum-ball estimate
+    centers = [(lo + hi) / 2, points.mean(0)]
+    c = centers[0].copy()
+    for k in range(1, 120):  # step toward the farthest point by 1/(k+1): converges to the minimum ball
+        far = points[int(np.argmax(np.linalg.norm(points - c, axis=1)))]
+        c = c + (far - c) / (k + 1)
+    centers.append(c)
+    best = min(centers, key=lambda cc: float(np.max(np.linalg.norm(points - cc, axis=1))))
+    out["sphere"] = GridShape("sphere", tuple(float(v) for v in best), radius=float(np.max(np.linalg.norm(points - best, axis=1))) + pad)
+    cxy = (lo[:2] + hi[:2]) / 2
+    rho = float(np.max(np.linalg.norm(points[:, :2] - cxy, axis=1)))
+    out["cylinder"] = GridShape("cylinder", (float(cxy[0]), float(cxy[1]), float((lo[2] + hi[2]) / 2)), radius=rho + pad,
+                                z_range=(float(lo[2] - pad), float(hi[2] + pad)))
+    normals = _sphere_directions(HULL_DIRECTIONS)
+    offsets = np.max(points @ normals.T, axis=0) + pad
+    out["hull"] = GridShape("hull", tuple(float(v) for v in (lo + hi) / 2), normals=normals, offsets=offsets)
+    return out
+
+
+def fit_grid(points: np.ndarray, step: float, pad: float | None = None, shapes=("box", "sphere", "cylinder", "hull"),
+             box: Box | None = None) -> tuple[np.ndarray, GridShape, dict[str, int]]:
+    """The reach grid: the v1 bounding-box lattice (`Box.around(points).grid(step)`), kept inside the
+    candidate shape with the fewest lattice points that still holds every point, padded by one grid
+    step (`pad`). Returns (positions (P, 3), the shape used, {shape: points it would keep}).
+
+    A flat axis (a planar arm) stays one layer. `box` overrides the bounding box (the lattice is then
+    exactly the given box's: an authored box is used as is, kind ``box``)."""
+    points = np.asarray(points, float).reshape(-1, 3)
+    pad = float(step) if pad is None else float(pad)
+    if box is not None:
+        grid = box.grid(step)
+        return grid, GridShape("box", tuple(box.center), box=box), {"box": len(grid)}
+    bbox = Box.around(points)
+    lattice = bbox.grid(step)
+    fits = fit_shapes(points, pad)
+    counts, kept = {}, {}
+    for name in shapes:
+        shape = fits[name]
+        if not np.all(shape.contains(points)):  # cannot happen by construction; never trade truth for points
+            continue
+        keep = lattice if name == "box" else lattice[shape.contains(lattice)]
+        counts[name], kept[name] = len(keep), keep
+    # WHY ties go to the earlier (simpler) shape: the box is v1's answer and is easiest to read.
+    name = min(counts, key=lambda k: (counts[k], shapes.index(k)))
+    return kept[name], fits[name], counts
 
 
 def voxel_keys(points: np.ndarray, step: float, origin: np.ndarray | None = None) -> np.ndarray:

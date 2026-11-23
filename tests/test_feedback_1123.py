@@ -224,7 +224,7 @@ def test_model_shows_styles_and_contacts(boxed):
     assert all(not v for v, _ in model_styles(arm.meshes, "none", set()))
     note = collision_note(arm, 0.0)
     assert "skeleton" in note and "collision meshes are drawn, not checked" in note
-    assert collision_note(rr_arm(), None) == "No collision is checked for this arm."
+    assert "free space" in collision_note(rr_arm(), None) and "FK/IK" in collision_note(rr_arm(), None)
 
 
 def test_mesh_opacity_is_opaque_at_full_and_collision_see_through_only_under_both(boxed):
@@ -293,14 +293,14 @@ def test_viewer_show_all_consistency_and_labels(viewer):
     v = viewer
     v.mount("ur5e")
     assert v.g_jog[1].label.endswith("(J2) (deg)")
-    v.g_show.value = "All"
-    v._redraw_workspace()
+    for key, _h in v._legend_rows:  # every legend bin on = round 1's Show "All" (2026-11-23 round 2: the legend list)
+        v._legend_toggled(key, True)
     assert len(v.visible_index) == v.reach.n_positions
     v.g_color.value = "consistency"
     v._color_changed()
-    assert v.g_show.value == "All" and "IK answered (checked)" in v.g_show.options
-    assert "coloured by consistency" in v.g_legend.content
-    assert "FK cloud" in v.g_cloud_md.content and "grid the voxel workspace" in v.g_cloud_md.content
+    assert v._legend_rows[0][1].label.startswith("no IK answer to check · ")
+    assert "grid points shown" in v.g_legend.content
+    assert "FK cloud" in v.g_cloud_md.content and "voxel grid is fitted around it" in v.g_cloud_md.content
     sweep = next(n for n in v._figures if n.endswith(": sweep"))
     v.g_fig.value = sweep
     v._picture_changed()
@@ -309,7 +309,7 @@ def test_viewer_show_all_consistency_and_labels(viewer):
     v.g_sweep_n.value = 8
     v._recompute_sweep()
     assert "J1) -30…30°" in v.g_fig_md.content and "8 postures" in v.g_fig_md.content
-    assert "Compute box / Drop POI try" in v.g_ask_res_md.content
+    assert "orientations</b> per point" in v.g_ask_res_md.content and "OrientationSet.sample(" in v.g_ask_code.content
 
 
 def test_viewer_robot_model_controls(viewer):

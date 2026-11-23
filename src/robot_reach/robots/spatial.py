@@ -6,6 +6,7 @@ import numpy as np
 
 from ..arm import Arm
 from ..codes import Code
+from ..configurations import elbow_configurations, ur_configurations
 from .planar import _rr_ik
 
 D = np.deg2rad
@@ -77,9 +78,10 @@ def shoulder3(
         _, sh, el, tp = points(q)
         return np.stack([(sh + el) / 2, el, (el + tp) / 2, tp], axis=1)
 
+    names = ("yaw", "shoulder", "elbow")
     return Arm(
         name="shoulder3",
-        joint_names=("yaw", "shoulder", "elbow"),
+        joint_names=names,
         lower=tuple(D(lower_deg)),
         upper=tuple(D(upper_deg)),
         fk=fk,
@@ -89,6 +91,7 @@ def shoulder3(
         mass_points=mass_points,
         masses=tuple(masses),
         torque_limits=tuple(torque_limits),
+        configurations=elbow_configurations(names, skeleton, shoulder=1, elbow=2, tip=3, yaw=0),
         description=f"3-DOF shoulder: yaw + pitch + elbow, L1={l1} m, L2={l2} m",
         meta={"home": [0.0, np.pi / 4, -np.pi / 2], "factory": ["robot_reach.robots", "shoulder3", {"height": height, "l1": l1, "l2": l2, "lower_deg": list(lower_deg), "upper_deg": list(upper_deg), "masses": list(masses), "torque_limits": list(torque_limits)}]},
     )
@@ -121,10 +124,12 @@ def _inv(T):
 
 
 def ur5e(dh: dict | None = None, elbow_limit_deg: float = 180.0) -> Arm:
-    """UR5e with its closed-form IK: all eight branches (shoulder L/R x wrist flip x elbow up/down).
+    """UR5e with its closed-form IK: all eight IK solutions (shoulder front/back x elbow up/down x wrist
+    flip), named by `configurations` from each posture.
 
     Limits: +-360 deg on every joint but the elbow (+-180 deg), as the real arm. The +-2pi twins
-    of a branch are the same physical posture and are not enumerated. No collision model."""
+    of a solution are the same physical posture and are not enumerated. No collision model and no
+    floor: the arm is in free space (Zach, 2026-11-23: "you never know how it will actually be mounted")."""
     p = dict(UR5E_DH if dh is None else dh)
     d = np.array([p["d1"], 0.0, 0.0, p["d4"], p["d5"], p["d6"]])
     a = np.array([0.0, p["a2"], p["a3"], 0.0, 0.0, 0.0])
@@ -199,21 +204,28 @@ def ur5e(dh: dict | None = None, elbow_limit_deg: float = 180.0) -> Arm:
         el_off = pts[:, 2] + F[:, 2, :3, 2] * 0.131
         return np.stack([pts[:, 0], pts[:, 1], sh_off, el_off, pts[:, 2], pts[:, 3], pts[:, 4], pts[:, 5], pts[:, 6]], axis=1)
 
+    def joint_axes(q):
+        F = frames(np.atleast_2d(q))[:, :6]  # joint k turns about frame k's z, through its origin
+        return F[..., :3, 2], F[..., :3, 3]
+
     lim = np.deg2rad(360.0)
     el = np.deg2rad(elbow_limit_deg)
+    names = ("shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3")
     return Arm(
         name="ur5e",
-        joint_names=("shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"),
+        joint_names=names,
         lower=(-lim, -lim, -el, -lim, -lim, -lim),
         upper=(lim, lim, el, lim, lim, lim),
         fk=fk,
         ik=ik,
         task="pose",
         skeleton=skeleton,
-        description="UR5e, closed-form IK (8 branches), DH from the UR datasheet",
+        configurations=ur_configurations(names, joint_axes),
+        description="UR5e, closed-form IK (8 IK solutions), DH from the UR datasheet",
         meta={
             "factory": ["robot_reach.robots", "ur5e", {"dh": p, "elbow_limit_deg": elbow_limit_deg}],
             "frames": frames,
+            "joint_axes": joint_axes,
             "home": [0.0, -np.pi / 2, np.pi / 2, -np.pi / 2, -np.pi / 2, 0.0],
         },
     )

@@ -30,13 +30,22 @@ ROBOTIQ_2F85_URDF = Path(os.environ.get("ROBOT_REACH_ROBOTIQ_2F85_URDF", GALLERY
 # from this URDF's finger meshes); the TCP sits ~9 mm back, mid finger pad, where a grasp holds.
 ROBOTIQ_2F85_TCP_Z = 0.150
 
+# WHY coarse grids for the gallery (Zach, 2026-11-23: "When first launch the demo, please set voxel size
+# smaller so it loads faster, and people can get up and running faster"): the first `examples` run computes
+# every arm before the viewer opens; the Workspace panel's settings card recomputes any arm finer in place.
+UR_STEPS_ACROSS = 12  # the 6-DOF arms' grid: 12 steps across the reach (analyze's default is 18)
+URDF_STEPS_ACROSS = 9  # the numeric-IK URDF arms: ~0.4 ms per target x 8 seeds, so coarser still
+JOINT_CELLS = 61  # the 6-DOF arms' sweep picture: 61 x 61 cells x 48 postures (analyze's default is 91)
+
 # name -> (arm factory, analyze() keyword arguments)
+# WHY no floor on the UR5e (Zach, 2026-11-23: "Please remove the floor from UR ... the arm should just be in
+# free space as you never know how it will actually be mounted"); the toy arms keep theirs to show the code.
 EXAMPLES: dict[str, tuple] = {
     "pendulum": (pendulum, {}),
     "rr": (rr, {"floor_z": -0.15}),
     "five_bar": (five_bar, {}),
     "shoulder3": (shoulder3, {"floor_z": 0.0}),
-    "ur5e": (ur5e, {"floor_z": 0.0}),
+    "ur5e": (ur5e, {"steps_across": UR_STEPS_ACROSS, "joint_cells": JOINT_CELLS}),
 }
 
 
@@ -94,10 +103,11 @@ def urdf_examples(out_dir: Path) -> dict[str, tuple]:
 
 
 def analyze_urdf_example(urdf: Path, tip: str, name: str):
-    """One URDF example through `analyze_chains` (quick sampling, numeric IK), meshes on, floor at z 0."""
+    """One URDF example through `analyze_chains` (quick sampling, numeric IK), meshes on, no floor."""
     from .urdf import analyze_chains
 
-    (result,) = analyze_chains(urdf, [tip], floor_z=0.0, arm_kw={"meshes": True, "name": name}).values()
+    (result,) = analyze_chains(urdf, [tip], arm_kw={"meshes": True, "name": name}, steps_across=URDF_STEPS_ACROSS,
+                             joint_cells=JOINT_CELLS).values()
     return result
 
 

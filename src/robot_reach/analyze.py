@@ -21,12 +21,16 @@ from .codes import Code
 from .joint_space import JointMap, JointRanges, joint_map, joint_ranges
 from .orientations import OrientationSet
 from .reach import ReachMap, reach_map
-from .sampling import Box, fk_cloud, sample_joints
+from .sampling import Box, fit_grid, fk_cloud, sample_joints
 
-RESULT_SCHEMA = "robot_reach.result.v2"
+RESULT_SCHEMA = "robot_reach.result.v3"
 # v2 (2026-11-23): a sweep also saves `uniform` (every posture had the cell's code), the ranges the
 # other joints were sampled over and the samples per cell. v1 still loads; those fields read as unknown.
-READABLE_SCHEMAS = ("robot_reach.result.v1", RESULT_SCHEMA)
+# v3 (2026-11-23, round 2): config["settings"] records everything the reach map was computed with (grid
+# step, grid shape, lattice, orientation steps), the grid is kept inside the tightest shape, joint-range
+# histograms use 10° bins, and the reach map tags IK configurations. v1/v2 still load (`settings_of`).
+READABLE_SCHEMAS = ("robot_reach.result.v1", "robot_reach.result.v2", RESULT_SCHEMA)
+GRID_SHAPES = ("box", "sphere", "cylinder", "hull")
 
 
 @dataclass(eq=False)
@@ -154,6 +158,12 @@ def load(folder: str | Path, rebuild_arm: bool = True) -> ReachResult:
             z["ranges_hist"] if "ranges_hist" in z else None,
         )
     arm = rebuild(doc["arm"]) if rebuild_arm else None
+    configs = getattr(arm, "configurations", None)
+    if reach is not None and reach.sol_config is None and configs is not None and configs.tag is not None:
+        # a map saved before IK configurations: tag its solutions now, from their postures
+        import dataclasses
+
+        reach = dataclasses.replace(reach, sol_config=configs.configuration(reach.sol_q.astype(float)), configurations=configs)
     return ReachResult(
         arm_info=doc["arm"],
         cloud_q=cloud_q,
@@ -192,14 +202,21 @@ def analyze(
     floor_z: float | None = None,
     singular_tol: float = 0.01,
     seed: int = 0,
+    grid_shape: str = "auto",
+    steps_across: int | None = None,
+    joint_cells: int = 91,
     progress=None,
 ) -> ReachResult:
     """Everything worth seeing about one arm, computed once.
 
-    1. FK cloud: joint samples -> positions, each classified (OK / torque / collision / singular).
-    2. Reach map (if the arm has IK and its workspace is not a curve): every IK branch on a grid
-       that the FK cloud bounds, crossed with one orientation set.
-    3. Joint maps: the 2R picture for chosen joint pairs (slice and sweep), or a line for 1 DOF.
+    1. FK cloud: joint samples -> positions, each classified (OK / torque / your FK's codes / singular).
+    2. Reach map (if the arm has IK and its workspace is not a curve): every IK solution on a grid
+       that the FK cloud bounds (`grid_shape`: "auto" keeps the lattice inside the tightest of box,
+       sphere, cylinder and convex hull, padded one step; or name one), crossed with one orientation set.
+       `floor_z` is an optional floor plane (ENVIRONMENT_COLLISION on the skeleton's points) for toy
+       arms; a real arm's collisions come from its FK/IK codes.
+    3. Joint maps: the 2R picture for chosen joint pairs (slice and sweep, `joint_cells` per axis), or a
+       line for 1 DOF.
     4. Joint ranges: limits vs the range the OK solutions actually use."""
     timings = {}
     t = time.perf_counter()
@@ -210,14 +227,17 @@ def analyze(
     timings["fk_cloud"] = time.perf_counter() - t
 
     pts = cloud.points
-    if box is None:
-        box = Box.around(pts)
-    extent = float(np.max(box.size))
-    flat_axes = int(np.sum(np.asarray(box.size) == 0))
+    given_box = box
+    bbox = Box.around(pts) if box is None else box
+    extent = float(np.max(bbox.size))
+    flat_axes = int(np.sum(np.asarray(bbox.size) == 0))
     grid_dims = 3 - flat_axes
     if step is None:
-        step = extent / (40 if grid_dims <= 2 else 18)
-    positions = box.grid(step)
+        # `steps_across`: grid steps along the FK cloud's longest side (default 18 in 3-D, 40 on a plane)
+        step = extent / (steps_across or (40 if grid_dims <= 2 else 18))
+    shapes = GRID_SHAPES if grid_shape == "auto" else (grid_shape,)
+    positions, shape, shape_counts = fit_grid(pts, step, shapes=shapes, box=given_box)
+    lattice = [int(len(np.unique(np.round(bbox.grid(step)[:, a], 9)))) for a in range(3)]
 
     reach = None
     if arm.ik is not None and grid_dims <= arm.dof:
@@ -234,7 +254,7 @@ def analyze(
     for axes in joint_axes:
         maps.append(joint_map(arm, axes, mode="slice", floor_z=floor_z, singular_tol=max(singular_tol, 0.02), w_ref=w_ref))
         if arm.dof > len(axes):
-            maps.append(joint_map(arm, axes, mode="sweep", n=91, floor_z=floor_z, singular_tol=max(singular_tol, 0.02), w_ref=w_ref))
+            maps.append(joint_map(arm, axes, mode="sweep", n=joint_cells, floor_z=floor_z, singular_tol=max(singular_tol, 0.02), w_ref=w_ref))
     timings["joint_maps"] = time.perf_counter() - t
     ranges = joint_ranges(arm, reach)
 
@@ -248,9 +268,21 @@ def analyze(
         "torque_limits": None if arm.torque_limits is None else list(arm.torque_limits),
         "factory": arm.meta.get("factory"),
     }
+    settings = {
+        "step_m": float(step),
+        "grid_shape": shape.kind,
+        "grid_shape_auto": grid_shape == "auto" and given_box is None,
+        "grid_shape_text": shape.describe(),
+        "grid_shape_points": shape_counts,
+        "lattice": lattice,
+        "grid_points": int(len(positions)),
+        "orientation": None if reach is None or reach.task == "position" else reach.orientations.resolution(),
+    }
     config = {
         "step": step,
-        "box": {"center": list(box.center), "size": list(box.size)},
+        "settings": settings,
+        "grid_shape": shape.to_json(),
+        "box": {"center": list(bbox.center), "size": list(bbox.size)},
         "n_fk": n_fk,
         "floor_z": floor_z,
         "singular_tol": singular_tol,
@@ -270,6 +302,28 @@ def analyze(
         timings=timings,
         arm=arm,
     )
+
+
+def settings_of(result) -> dict:
+    """The settings a result was computed with (`config["settings"]`), rebuilt for a v1/v2 result from
+    what it stored: the step, its bounding-box lattice and the orientation set read back."""
+    cfg = result.config
+    if "settings" in cfg:
+        return cfg["settings"]
+    reach = result.reach
+    size = cfg.get("box", {}).get("size", [0, 0, 0])
+    step = float(cfg.get("step") or 0.0)
+    lattice = [int(np.ceil(s / step - 1e-9)) + 1 if s > 0 and step > 0 else 1 for s in size]
+    return {
+        "step_m": step,
+        "grid_shape": "box",
+        "grid_shape_auto": False,
+        "grid_shape_text": "box (saved before grid shapes)",
+        "grid_shape_points": {},
+        "lattice": lattice,
+        "grid_points": 0 if reach is None else int(reach.n_positions),
+        "orientation": None if reach is None or reach.task == "position" else reach.orientations.resolution(),
+    }
 
 
 def default_joint_axes(arm: Arm) -> list[tuple[int, ...]]:

@@ -31,20 +31,21 @@ arm = rr.Arm(
     joint_names=("q1", "q2", "q3"),
     lower=(-3.0, -1.0, -2.5),          # rad (m for prismatic)
     upper=(3.0, 2.0, 2.5),
-    fk=my_fk,                          # (N, dof) -> (N, 4, 4), or ((N, 4, 4), ok (N,)) when FK can fail
-    ik=my_ik,                          # (N, 4, 4) -> (q (N, S, dof), code (N, S)): EVERY branch, a Code each
+    fk=my_fk,                          # (N, dof) -> (N, 4, 4), or ((N, 4, 4), ok (N,)) / ((N, 4, 4), code (N,))
+    ik=my_ik,                          # (N, 4, 4) -> (q (N, S, dof), code (N, S)): EVERY IK solution, a Code each
     task="position",                   # "pose" (6-DOF) | "axis" (5-DOF, roll free) | "position"
 )
 ```
 
 | Field | Shape / type | Meaning |
 |---|---|---|
-| `fk` | `(N, dof) -> (N, 4, 4)` | base->tool pose; the tool's +Z is the approach axis |
-| `ik` | `(N, 4, 4) -> (q (N, S, dof), code (N, S))` | all S branches (2 for an elbow, 8 for a UR); unused slot = `Code.PAD` |
+| `fk` | `(N, dof) -> (N, 4, 4)` | base->tool pose; the tool's +Z is the approach axis; may also return a `Code` per posture (`SELF_COLLISION`, `FK_FAIL`, ...) |
+| `ik` | `(N, 4, 4) -> (q (N, S, dof), code (N, S))` | all S IK solutions (2 for an elbow, 8 for a UR); unused slot = `Code.PAD`; a collision is a code here |
 | `task` | `"pose" \| "axis" \| "position"` | what part of a target the arm is asked to match; no false 6-DOF claim |
 | `skeleton` | `(N, dof) -> (N, K, 3)` | points to draw the arm |
 | `mass_points`, `masses`, `torque_limits` | `(N, dof) -> (N, M, 3)`, kg, N·m | static gravity torque vs motor limit |
-| `collision` | `(N, dof) -> (N,)` bool | None = not checked (never assumed free) |
+| `collision` | `(N, dof) -> (N,)` bool or `Code` | optional thin adapter for a separate checker, folded into the codes; None = not checked here |
+| `configurations` | `IKConfigurations` | the questions that name the IK solutions (UR: shoulder × elbow × wrist) and `tag(q)` answering them from a posture |
 | `singular` | `(N, dof) -> (N,)` bool | a mechanism's own singularity test (a five-bar's) |
 | `plane` | point, normal | a planar arm; grids collapse onto it |
 | `meshes`, `mesh_poses` | `ArmMesh` parts, `(N, dof) -> (N, M, 4, 4)` | posed geometry for clearance and footprint |
@@ -58,13 +59,21 @@ Methods every consumer can call on an `Arm`: `forward(q) -> (T, ok)`, `inverse(T
 (both chunked), `check(q, floor_z=, singular_tol=) -> code`, `jacobian(q)` (N, 6, dof),
 `manipulability(q)`, `gravity_torque(q)`, `surface(q)`, `within_limits(q)`, `dof`, `limits`.
 
-**The library re-checks every IK claim**: joint limits (trying the ±2π twin of revolute joints), the
-FK round trip, duplicate branches, collision, torque and singularity. A lazy solver cannot overclaim.
+**The library re-checks what it can from the maths alone**: joint limits (trying the ±2π twin of revolute
+joints), the FK round trip, duplicate solutions, torque and singularity. A lazy solver cannot overclaim.
+
+**Collision is reported by your FK/IK**, never computed here: return `Code.SELF_COLLISION`,
+`Code.ENVIRONMENT_COLLISION` (or `Code.COLLISION`) per IK solution or per FK posture and every view
+enumerates and colours it. `analyze(floor_z=)` is only a convenience floor for toy arms.
+
+**The tool frame is whatever your FK/IK return**: reach is measured for it (add a gripper's TCP to the
+chain and the map is the fingers'). One serial chain per `Arm` today; multiple chains are a planned
+extension (each its own `Arm` until then).
 
 ### Built-in arms (`robot_reach.robots`)
 
 `pendulum()` 1-DOF · `rr()` 2-DOF · `five_bar()` 2-DOF closed chain · `shoulder3()` 3-DOF ·
-`ur5e()` 6-DOF closed-form IK, 8 branches.
+`ur5e()` 6-DOF closed-form IK, 8 IK solutions named by `configurations`. No floor: the UR arms are in free space.
 
 ### From a URDF or a RobotDescription (`robot_reach.urdf`)
 
@@ -85,16 +94,18 @@ you have a closed form; it is several times faster.
 ## 2. Compute: `analyze()`
 
 ```python
-result = rr.analyze(arm, floor_z=0.0)         # step=, box=, orientations=, n_fk=, joint_axes=, singular_tol=, seed=
+result = rr.analyze(arm)                      # step=, steps_across=, grid_shape=, box=, orientations=, n_fk=, joint_axes=, singular_tol=, seed=, floor_z=
 ```
 
 1. **FK cloud** — sample joints, run FK, classify each sample. Works for any DOF (a pendulum's workspace
    is a circle no grid would hit) and bounds the grid, so nobody guesses an extent.
-2. **Reach map** — a grid inside that box × one shared `OrientationSet` (22 approach directions × 6
-   rolls = 132), IK at every target, every branch kept with its final code.
+2. **Reach map** — the box's lattice kept inside the tightest of box / sphere / cylinder / convex hull
+   (`grid_shape="auto"`, padded one step; `rr.sampling.fit_grid`) × one shared `OrientationSet` (22 approach
+   directions × 6 rolls = 132), IK at every target, every IK solution kept with its final code and its IK
+   configuration. `config["settings"]` records the step, grid shape, lattice and orientation steps.
 3. **Joint maps** — the 2R picture for joint pairs: `slice` (others at home) and `sweep` (others
    sampled; value = fraction that works). 1-DOF: a line with its gravity torque.
-4. **Joint ranges** — limits vs the range the working solutions actually use.
+4. **Joint ranges** — per joint, a 10° histogram of the working solutions' angles, against its limits.
 
 Lower-level pieces are public too: `rr.fk_cloud`, `rr.reach_map(arm, positions, orientations)`,
 `rr.joint_map`, `rr.joint_ranges`, `rr.Box`, `rr.OrientationSet.sample(approach=...)`.
@@ -122,24 +133,29 @@ layout changes; the examples CLI recomputes a result saved under an older one): 
 | `positions` | (P, 3) | grid points, arm base frame, m |
 | `orientations.R` | (O, 3, 3) | one orientation set shared by every point |
 | `code` | (P, O, S) int8 | final `Code` per IK branch |
-| `sol_index`, `sol_q` | (K,), (K, dof) | every OK branch: flat index into (P, O, S), and its joints |
-| `n_solutions` | (P, O) | count of OK branches |
+| `sol_index`, `sol_q` | (K,), (K, dof) | every OK IK solution: flat index into (P, O, S), and its joints |
+| `sol_config`, `configurations` | (K,) uint8, `IKConfigurations` | each solution's IK configuration (from its posture), and the questions |
+| `filtered(allowed)` | `ReachMap` | only the allowed IK configurations: `m.filtered(m.configurations.allowed(elbow="up"))` |
+| `n_solutions` | (P, O) | count of OK IK solutions |
 | `valid_mask`, `reach_scores` | (P, O), (P,) | bam_reach v1 field names, kept |
-| `joint_solutions` | (P, O, dof) | first OK branch per pose, NaN if none (v1's shape; robot_trajectories duck-types it) |
-| `levels(threshold=1.0)` | (P,) | pose DOF the arm controls there: 0, 3, 4, 5, 6 |
-| `workspace(kind, threshold=1.0)` | (P,) bool | `reachable` · `four_dof` · `hemisphere` · `dexterous` |
+| `joint_solutions` | (P, O, dof) | first OK solution per pose, NaN if none (v1's shape; robot_trajectories duck-types it) |
+| `levels(threshold=1.0)` | (P,) | workspace level as an int key of `LEVEL_NAMES`: 0 unreachable, 3 reachable, 4 top-down, 5 hemisphere, 6 dexterous |
+| `workspace(kind, threshold=1.0)` | (P,) bool | `reachable` · `four_dof` (top-down) · `hemisphere` · `dexterous` |
 | `score(kind)` | (P,) | fraction of that kind's orientations reachable |
-| `solutions(p)` | list | every OK `(orientation index, branch index, q)` at point p |
+| `solutions(p)` | list | every OK `(orientation index, solver slot, q)` at point p (`solution_configs(p)`: their configurations) |
 | `target(p, o)` | (4, 4) | the pose a solution reaches |
 | `code_counts()` | dict | branches per code |
 
-Levels: **3** reachable (some orientation works) · **4** straight-down approach at every yaw (top-down
-picking) · **5** hemisphere (every approach within 90° of the reference, every roll) · **6** dexterous
-(every sampled orientation). All four are masks over one map.
+Workspaces, by name (`rr.LEVEL_NAMES`): **reachable** (at least one orientation works) · **top-down**
+(straight down along the approach axis at every yaw) · **hemisphere** (every approach in the hemisphere,
+every roll) · **dexterous** (every sampled orientation). Nested: each includes the next. All four are
+masks over one map.
 
 **`Code`** (`rr.Code`, `rr.CODE_LABELS`, `rr.CODE_COLORS`) — one vocabulary for every view:
-`OK`, `NO_SOLUTION`, `JOINT_LIMIT`, `SINGULAR`, `COLLISION`, `TORQUE_LIMIT`, `FK_MISMATCH`, `FK_FAIL`
-(linkage cannot close), `PAD` (unused slot).
+`OK`, `NO_SOLUTION`, `JOINT_LIMIT`, `SINGULAR`, `COLLISION`, `SELF_COLLISION`, `ENVIRONMENT_COLLISION`
+(the three collision codes are returned by your IK/FK; `rr.codes.is_collision`), `TORQUE_LIMIT`,
+`FK_MISMATCH`, `FK_FAIL` (linkage cannot close), `EXCLUDED` (a filtered-out IK configuration, in memory
+only), `PAD` (unused slot).
 
 Typical downstream queries today are a few lines of numpy over these arrays (worked example §4-5):
 
@@ -147,7 +163,7 @@ Typical downstream queries today are a few lines of numpy over these arrays (wor
 m = rr.load("out/ur5e").reach
 hemi = np.flatnonzero(m.workspace("hemisphere"))             # sample a workspace
 p = np.random.default_rng(0).choice(hemi)
-for o, branch, q in m.solutions(p): ...                      # every IK branch there
+for o, slot, q in m.solutions(p): ...                        # every IK solution there
 belt = rr.Box(center=(0.6, 0, 0.15), size=(0.5, 0.8, 0.2))
 over_belt = belt.contains(m.positions) & m.workspace("four_dof")  # top-down pickable over the belt
 fine = rr.reach_map(arm, belt.grid(0.05), rr.OrientationSet.sample())   # finer map of one volume
@@ -161,16 +177,19 @@ There is no `ReachMap.sample()` or typed query object yet; that is what the prop
 result.display()                              # blocks; the viewer recomputes live in Python
 from robot_reach.overlay import add_reach_map
 overlay = add_reach_map(server, result.reach, parent_frame="/cell/robot_1")   # into anyone's viser scene
-overlay.kind = "four_dof"; overlay.visible = False
+overlay.kind = "four_dof"; overlay.update(colormap="magma", reverse=True); overlay.visible = False
 ```
 
 `overlay.py` imports nothing from viser and works on viser 1.0.16 and 1.1.1. CLI:
 `python -m robot_reach examples | urdf <path> | rest <spec> [--solve]`.
 
-In the viewer: click a voxel to put the arm there, **Next ▶** walks every (orientation, IK branch);
-**Cut**, **Blob** (voxel surface that keeps holes), **FK cloud**, **Jog** sliders with live code and
-torque, **Ask here** → **Compute box** (finer map of a dragged box) and **Drop POI** (every
-orientation at one point).
+In the viewer: a settings card (what the map was computed with; edit → **Compute workspace**), colour by
+workspace / IK solutions / fraction / consistency through a colormap (viridis default) or a traffic light,
+a legend list (click a bin to hide it), **IK configurations** toggles that filter everything, click a
+voxel to put the arm there, **Next ▶** walks every (orientation, IK solution) with its configuration's
+name; **Cut**, **Blob** (voxel surface that keeps holes), **FK cloud**, **Jog** sliders with live code and
+torque, **Ask here** → a box you move and tilt in 3-D (its −Z is the approach) → **Compute box** and
+**Drop POI**; joint ranges as one histogram per joint; show/hide the skeleton.
 
 ## 6. Rest and ready poses (`robot_reach.rest`, `robot_reach.goals`)
 

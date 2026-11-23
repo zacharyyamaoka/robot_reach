@@ -79,7 +79,7 @@ def test_reach_map_codes_are_honest():
     m = reach_map(arm, positions, floor_z=-0.15)
     codes = set(m.code_counts())
     # out of reach, joint limits, the floor and the motors all show up, each with its own code
-    assert {"OK", "NO_SOLUTION", "JOINT_LIMIT", "COLLISION", "TORQUE_LIMIT"} <= codes
+    assert {"OK", "NO_SOLUTION", "JOINT_LIMIT", "ENVIRONMENT_COLLISION", "TORQUE_LIMIT"} <= codes  # the floor is the environment
     far = np.linalg.norm(positions[:, [0, 2]], axis=1) > 0.55 + 1e-6
     assert np.all(m.code[far][..., 0] == Code.NO_SOLUTION)
     # every stored solution is OK and inside the limits
@@ -121,7 +121,7 @@ def test_save_load_round_trip_rebuilds_the_arm(tmp_path):
     assert np.allclose(back.reach.sol_q, res.reach.sol_q)
     assert back.summary()["reach"] == res.summary()["reach"]
     doc = json.loads((tmp_path / "rr" / "result.json").read_text())
-    assert doc["schema"] == "robot_reach.result.v2"
+    assert doc["schema"] == "robot_reach.result.v3"
 
 
 def test_v1_compatible_fields():

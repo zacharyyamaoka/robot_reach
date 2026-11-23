@@ -168,44 +168,49 @@ def joint_line_figure(jm, title: str | None = None, torque_limits=None):
     return fig
 
 
-def ranges_figure(ranges, arm_name: str = ""):
-    """One bar per joint: the limits (light), the range OK IK solutions use (solid), and how often
-    each angle is used (the strip's darkness)."""
+def ranges_figure(ranges, arm_name: str = "", note: str = ""):
+    """One histogram per joint (Zach's pick B2, 2026-11-23): bar height = share of the working IK
+    solutions at that angle (10° bins), the grey band behind = the joint's limits. One shared angle axis."""
     plt = _plt()
     n = len(ranges.names)
-    fig, ax = plt.subplots(figsize=(6.4, 0.55 * n + 1.0), dpi=110)
     lim = np.rad2deg(ranges.limits)
-    for i in range(n):
-        y = n - 1 - i
-        ax.barh(y, lim[i, 1] - lim[i, 0], left=lim[i, 0], height=0.62, color="#f0f2f4", edgecolor=GRID)
+    fig, axes = plt.subplots(n, 1, figsize=(6.4, 0.72 * n + 0.9), dpi=110, sharex=True, squeeze=False)
+    axes = axes[:, 0]
+    x_lo, x_hi = float(lim.min()) - 10, float(lim.max()) + 10
+    labels = joint_labels(ranges.names)
+    green = np.array(CODE_COLORS[Code.OK]) / 255
+    top = 0.0
+    if ranges.hist is not None:
+        totals = ranges.hist.sum(axis=1, keepdims=True)
+        share = np.where(totals > 0, ranges.hist / np.maximum(totals, 1), 0.0)
+        top = float(share.max()) if share.size else 0.0
+    for i, ax in enumerate(axes):
+        ax.axvspan(lim[i, 0], lim[i, 1], color="#eceef1", lw=0, zorder=0)
+        ax.set_yticks([])
+        ax.spines["left"].set_visible(False)
+        ax.text(0.01, 0.92, labels[i], transform=ax.transAxes, va="top", ha="left", fontsize=8, color=INK, zorder=3)
         if ranges.hist is not None and ranges.hist[i].sum() > 0:
             edges = np.rad2deg(ranges.hist_edges[i])
-            # WHY smoothed: a lattice of targets aliases into a striped histogram that reads as
-            # noise; a 5-tap blur keeps the shape (where solutions cluster) and drops the stripes.
-            h = np.convolve(ranges.hist[i].astype(float), [1, 2, 3, 2, 1], mode="same")
-            h = h / h.max()
-            base, solid = np.array([0.94, 0.95, 0.96]), np.array([34, 94, 168]) / 255
-            colors = base * (1 - h[:, None]) + solid * h[:, None]
-            for k in range(len(h)):
-                if h[k] > 0:
-                    ax.barh(y, edges[k + 1] - edges[k], left=edges[k], height=0.62, color=colors[k], edgecolor="none")
+            ax.bar(edges[:-1], share[i], width=np.diff(edges), align="edge", color=green, lw=0, zorder=2)
             u = np.rad2deg(ranges.used[i])
-            ax.plot(u, [y, y], "|", color=INK, ms=14, mew=1.6)
-            ax.text(lim[i, 1] + 4, y, f"uses {u[0]:.0f}…{u[1]:.0f}°", va="center", fontsize=8, color=MUTED)
+            ax.text(0.99, 0.92, f"uses {u[0]:.0f}…{u[1]:.0f}°", transform=ax.transAxes, va="top", ha="right", fontsize=7.5, color=MUTED, zorder=3)
         else:
-            ax.text(lim[i, 1] + 4, y, f"{lim[i, 0]:.0f}…{lim[i, 1]:.0f}°", va="center", fontsize=8, color=MUTED)
-    ax.set_yticks(range(n))
-    ax.set_yticklabels(list(reversed(joint_labels(ranges.names))))
-    ax.set_xlabel("joint angle (deg)")
-    ax.set_title(f"{arm_name}: joint limits (light) and what the reachable solutions use (dark = often)", loc="left")
-    ax.grid(axis="x", color=GRID, lw=0.5)
-    ax.set_xlim(lim.min() - 10, lim.max() + 90)
-    fig.tight_layout()
+            ax.text(0.99, 0.92, "no working solution", transform=ax.transAxes, va="top", ha="right", fontsize=7.5, color=MUTED)
+        ax.set_ylim(0, (top or 1.0) * 1.35)
+        ax.set_xlim(x_lo, x_hi)
+    ticks = np.arange(np.ceil(x_lo / 90) * 90, x_hi + 1, 90)
+    axes[-1].set_xticks(ticks)
+    axes[-1].set_xlabel("joint angle (deg)")
+    title = "bar height = share of working solutions at that angle (10° bins) · grey = limit"
+    fig.suptitle(f"{arm_name}: {title}" if arm_name else title, x=0.02, ha="left", fontsize=9, fontweight="bold")
+    if note:
+        fig.text(0.02, 0.005, note, fontsize=7.5, color=MUTED, ha="left", va="bottom")
+    fig.tight_layout(h_pad=0.2)
     return fig
 
 
 def plane_figure(result):
-    """Planar arms: the Cartesian picture in the arm's plane, coloured by how many IK branches work
+    """Planar arms: the Cartesian picture in the arm's plane, coloured by how many IK solutions work
     (the classic 2R view: 0 white, 1 light, 2 solid)."""
     plt = _plt()
     reach = result.reach
@@ -225,14 +230,14 @@ def plane_figure(result):
     ax.set_aspect("equal")
     ax.set_xlabel("x (m)")
     ax.set_ylabel("z (m)")
-    ax.set_title(f"{result.arm_info['name']}: reachable points in its plane — colour = number of IK branches", loc="left")
+    ax.set_title(f"{result.arm_info['name']}: reachable points in its plane — colour = number of IK solutions", loc="left")
     from matplotlib.patches import Patch
 
     extra = [Patch(facecolor=ramp_rgb(np.array([k]), max(1, reach.n_branches))[0] / 255, label=f"{k} solution{'s' if k > 1 else ''}")
              for k in range(1, int(n.max()) + 1)]
     _legend(ax, worst[n == 0], extra)
     if result.config.get("floor_z") is not None:
-        ax.axhline(result.config["floor_z"], color=np.array(CODE_COLORS[Code.COLLISION]) / 255, lw=1, ls="--")
+        ax.axhline(result.config["floor_z"], color=np.array(CODE_COLORS[Code.ENVIRONMENT_COLLISION]) / 255, lw=1, ls="--")
     ax.grid(color=GRID, lw=0.5)
     fig.tight_layout()
     return fig
@@ -240,7 +245,7 @@ def plane_figure(result):
 
 def _dominant_failure(codes: np.ndarray) -> np.ndarray:
     """(P, S) branch codes -> (P,) the 'closest to working' failure, for colouring empty cells."""
-    order = [Code.SINGULAR, Code.TORQUE_LIMIT, Code.COLLISION, Code.JOINT_LIMIT, Code.FK_MISMATCH, Code.FK_FAIL, Code.NO_SOLUTION]
+    order = [Code.SINGULAR, Code.TORQUE_LIMIT, Code.SELF_COLLISION, Code.ENVIRONMENT_COLLISION, Code.COLLISION, Code.JOINT_LIMIT, Code.FK_MISMATCH, Code.FK_FAIL, Code.NO_SOLUTION]
     out = np.full(len(codes), int(Code.NO_SOLUTION), np.int8)
     for c in reversed(order):
         out[np.any(codes == c, axis=1)] = c

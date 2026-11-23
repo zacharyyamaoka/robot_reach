@@ -4,8 +4,14 @@
 
     overlay = add_reach_map(server, reach_map, parent_frame="/facility/robot_1")
     overlay.kind = "four_dof"        # all | reachable | four_dof | hemisphere | dexterous (or a SHOW key)
-    overlay.color_by = "consistency" # pose DOF | IK solutions | fraction of orientations | consistency
+    overlay.color_by = "consistency" # workspace | IK solutions | fraction of orientations | consistency
+    overlay.update(colormap="magma", reverse=True, hidden={"0"})   # heat map; hide a legend bin
     overlay.visible = False
+
+Colours (Zach, 2026-11-23): good / partial / bad views are a traffic light (consistency); heat maps
+(workspace level, IK solutions, fraction of orientations) use a perceptual colormap, viridis by default
+(`codes.COLORMAPS`: viridis, magma, plasma, inferno, cividis), optionally reversed. `bins()` is the legend
+list: one row per bin with its colour and count, and any bin can be hidden.
 
 WHY a separate seam from `display()` (Zach's 2026-11-19 pipeline, step 6: "place it next to a
 conveyor belt or in a Customer Facility — being able to see the reachability map here is helpful
@@ -24,14 +30,26 @@ from collections.abc import Callable
 import numpy as np
 
 from .blobs import count_bodies, voxel_surface
-from .codes import CODE_COLORS, LEVEL_COLORS, LEVEL_NAMES, Code, level_rgb, ramp_rgb
+from .codes import (CODE_COLORS, DEFAULT_COLORMAP, LEVEL_MEANINGS, LEVEL_NAMES, TRAFFIC, Code, colormap_rgb, level_colors,
+                    level_rgb)
 
 CUBE_V = np.array([[x, y, z] for x in (-0.5, 0.5) for y in (-0.5, 0.5) for z in (-0.5, 0.5)], float)
 CUBE_F = np.array(
     [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1], [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]]
 )
 KINDS = ("all", "reachable", "four_dof", "hemisphere", "dexterous")
-COLOR_BY = ("pose DOF", "IK solutions", "fraction of orientations", "consistency")
+COLOR_BY = ("workspace", "IK solutions", "fraction of orientations", "consistency")
+_ALIASES = {"pose DOF": "workspace"}  # the round-1 name
+
+
+def color_mode(reach, color_by: str) -> str:
+    """The colouring actually used: aliases resolved, position-only maps fall back to what they have."""
+    color_by = _ALIASES.get(color_by, color_by)
+    if color_by not in COLOR_BY:
+        raise ValueError(f"color_by must be one of {COLOR_BY}")
+    if reach.task == "position" and color_by == "fraction of orientations":
+        return "IK solutions"
+    return color_by
 
 # WHY a sampled-but-empty point is light grey, not white (Zach, 2026-11-23: "add one that is All. that
 # way you can see like all the voxels that were sampled in the first place"): the "no IK solution"
@@ -40,10 +58,11 @@ EMPTY_RGB = CODE_COLORS[Code.NO_SOLUTION]
 
 # Consistency (bam_reach v1's "colour by consistency"): did FK(IK) land back on the target at a point?
 # A branch the library checked and passed is any of these codes (the round trip comes before them).
-_ROUND_TRIP_PASSED = (Code.OK, Code.COLLISION, Code.TORQUE_LIMIT, Code.SINGULAR)
+_ROUND_TRIP_PASSED = (Code.OK, Code.COLLISION, Code.SELF_COLLISION, Code.ENVIRONMENT_COLLISION, Code.TORQUE_LIMIT,
+                      Code.SINGULAR, Code.EXCLUDED)
 _ROUND_TRIP_FAILED = (Code.FK_MISMATCH, Code.FK_FAIL)
 CONSISTENCY_NAMES = {0: "no IK answer to check", 1: "FK(IK) matched", 2: "some FK(IK) mismatched", 3: "every FK(IK) mismatched"}
-CONSISTENCY_COLORS = {0: EMPTY_RGB, 1: CODE_COLORS[Code.OK], 2: (240, 160, 200), 3: CODE_COLORS[Code.FK_MISMATCH]}
+CONSISTENCY_COLORS = {0: EMPTY_RGB, 1: TRAFFIC["good"], 2: TRAFFIC["partial"], 3: TRAFFIC["bad"]}
 
 
 def consistency(reach) -> np.ndarray:
@@ -63,10 +82,11 @@ def show_options(reach, color_by: str) -> dict[str, str]:
 
     WHY per colour (Zach, 2026-11-23: "The show should also update to match what you are coloring by")."""
     out = {"All": "all"}
-    if reach.task == "position" and color_by in ("pose DOF", "fraction of orientations"):
-        color_by = "IK solutions"
-    if color_by == "pose DOF":
-        out.update({"reachable (3+ DOF)": "reachable", "4-DOF+": "four_dof", "hemisphere (5+ DOF)": "hemisphere", "dexterous (6 DOF)": "dexterous"})
+    color_by = color_mode(reach, color_by)
+    if color_by == "workspace" and reach.task == "position":
+        out["reachable"] = "reachable"
+    elif color_by == "workspace":
+        out.update({LEVEL_NAMES[k]: key for k, key in ((3, "reachable"), (4, "four_dof"), (5, "hemisphere"), (6, "dexterous"))})
     elif color_by == "IK solutions":
         top = int(reach.n_solutions.max()) if reach.n_positions else 0
         out.update({f"{k}+ IK solutions": f"solutions>={k}" for k in range(1, max(top, 1) + 1)})
@@ -76,8 +96,6 @@ def show_options(reach, color_by: str) -> dict[str, str]:
     elif color_by == "consistency":
         out.update({"IK answered (checked)": "consistency>=1", "FK(IK) matched": "consistency==1",
                     "any FK(IK) mismatch": "consistency>=2"})
-    else:
-        raise ValueError(f"color_by must be one of {COLOR_BY}")
     return out
 
 
@@ -103,35 +121,85 @@ def show_mask(reach, key: str) -> np.ndarray:
     raise ValueError(f"unknown Show key {key!r}: one of {KINDS} or a show_options() value")
 
 
-def colors_and_legend(reach, color_by: str, idx: np.ndarray) -> tuple[np.ndarray, str]:
-    """(len(idx), 3) colours for points `idx` and the legend line (HTML) for what they mean."""
-    def sw(rgb):
-        return f"<span style='color:rgb{tuple(int(c) for c in rgb)}'>■</span>"
+def _sw(rgb) -> str:
+    return f"<span style='color:rgb{tuple(int(c) for c in rgb)}'>■</span>"
 
-    if reach.task == "position" and color_by in ("pose DOF", "fraction of orientations"):
-        color_by = "IK solutions"
-    if color_by == "pose DOF":
+
+FRACTION_BINS = ((0.0, 0.0, "0 %"), (0.0, 0.25, "under 25 %"), (0.25, 0.5, "25–50 %"), (0.5, 0.75, "50–75 %"),
+                 (0.75, 1.0, "75–99 %"), (1.0, 1.0, "100 %"))
+
+
+def bins(reach, color_by: str, colormap: str = DEFAULT_COLORMAP, reverse: bool = False) -> tuple[np.ndarray, list[dict]]:
+    """The legend list: ((P,) bin key per point, [{key, label, meaning, rgb, count}, ...]).
+
+    The first bin is always "nothing works here" (the empty, light-grey one). Workspace bins are the
+    highest level each point reaches (levels are nested: each includes the next)."""
+    mode = color_mode(reach, color_by)
+    P = reach.n_positions
+    rows = []
+    if mode == "workspace":
+        lv = reach.levels()
+        colors = level_colors(colormap, reverse)
+        key = lv.astype(str)
+        rows.append({"key": "0", "label": LEVEL_NAMES[0], "meaning": LEVEL_MEANINGS[0], "rgb": EMPTY_RGB})
+        for k in ((3,) if reach.task == "position" else (3, 4, 5, 6)):
+            rows.append({"key": str(k), "label": LEVEL_NAMES[k], "meaning": LEVEL_MEANINGS[k], "rgb": colors[k]})
+    elif mode == "IK solutions":
+        v = reach.n_solutions.max(axis=1) if P else np.zeros(0, int)
+        key = v.astype(str)
+        top = max(1, reach.n_branches)
+        rows.append({"key": "0", "label": "no IK solution", "meaning": "no orientation has a working IK solution", "rgb": EMPTY_RGB})
+        rgb = colormap_rgb(np.arange(1, top + 1), 1, top, colormap, reverse)
+        for k in range(1, top + 1):
+            rows.append({"key": str(k), "label": f"{k} IK solution{'s' if k > 1 else ''}",
+                         "meaning": f"{k} working IK solutions at its best orientation", "rgb": tuple(int(c) for c in rgb[k - 1])})
+    elif mode == "fraction of orientations":
+        v = reach.score("dexterous")
+        # 0: none, 1: (0, 25 %), 2: [25, 50), 3: [50, 75), 4: [75, 100), 5: all
+        k = np.digitize(v, [1e-9, 0.25 - 1e-9, 0.5 - 1e-9, 0.75 - 1e-9, 1.0 - 1e-9])
+        key = k.astype(str)
+        for i, (lo, hi, label) in enumerate(FRACTION_BINS):
+            mid = 1.0 if i == len(FRACTION_BINS) - 1 else (lo + hi) / 2
+            rgb = EMPTY_RGB if i == 0 else tuple(int(c) for c in colormap_rgb(np.array([mid]), 0, 1, colormap, reverse)[0])
+            rows.append({"key": str(i), "label": label + (" of orientations" if i == 0 else ""),
+                         "meaning": f"{label} of the {reach.n_orientations} sampled orientations reachable", "rgb": rgb})
+    else:  # consistency
+        c = consistency(reach)
+        key = c.astype(str)
+        for k in (0, 1, 2, 3):
+            rows.append({"key": str(k), "label": CONSISTENCY_NAMES[k], "meaning": CONSISTENCY_NAMES[k], "rgb": CONSISTENCY_COLORS[k]})
+    counts = {k: int(n) for k, n in zip(*np.unique(key, return_counts=True))} if P else {}
+    for row in rows:
+        row["count"] = counts.get(row["key"], 0)
+    return key, rows
+
+
+def colors_and_legend(reach, color_by: str, idx: np.ndarray, colormap: str = DEFAULT_COLORMAP,
+                      reverse: bool = False) -> tuple[np.ndarray, str]:
+    """(len(idx), 3) colours for points `idx` and the legend line (HTML) for what they mean. Heat maps are
+    continuous (`colormap`); empty points are light grey; consistency is a traffic light."""
+    mode = color_mode(reach, color_by)
+    if mode == "workspace":
         lv = reach.levels()[idx]
-        colors = level_rgb(lv)
+        colors = level_rgb(lv, level_colors(colormap, reverse))
         colors[lv == 0] = EMPTY_RGB
-        legend = " ".join(f"{sw(LEVEL_COLORS[k])} {k} {LEVEL_NAMES[k]}" for k in (3, 4, 5, 6))
-        legend = f"{sw(EMPTY_RGB)} 0 none · " + legend
-    elif color_by == "fraction of orientations":
+        keys = (3,) if reach.task == "position" else (3, 4, 5, 6)
+        cols = level_colors(colormap, reverse)
+        legend = f"{_sw(EMPTY_RGB)} {LEVEL_NAMES[0]} · " + " ".join(f"{_sw(cols[k])} {LEVEL_NAMES[k]}" for k in keys)
+    elif mode == "fraction of orientations":
         v = reach.score("dexterous")[idx]
-        colors = ramp_rgb(v, 1.0)
+        colors = colormap_rgb(v, 0.0, 1.0, colormap, reverse)
         colors[v <= 0] = EMPTY_RGB
-        legend = f"{sw(EMPTY_RGB)} 0 % · white → deep blue = 0 → 100 % of all {reach.n_orientations} sampled orientations reachable"
-    elif color_by == "consistency":
+        legend = f"{_sw(EMPTY_RGB)} 0 % · {colormap}{' reversed' if reverse else ''}: 0 → 100 % of all {reach.n_orientations} sampled orientations reachable"
+    elif mode == "consistency":
         c = consistency(reach)[idx]
         colors = np.array([CONSISTENCY_COLORS[int(k)] for k in c], np.uint8).reshape(-1, 3)
-        legend = " ".join(f"{sw(CONSISTENCY_COLORS[k])} {CONSISTENCY_NAMES[k]}" for k in (1, 2, 3, 0))
-    elif color_by == "IK solutions":
+        legend = " ".join(f"{_sw(CONSISTENCY_COLORS[k])} {CONSISTENCY_NAMES[k]}" for k in (1, 2, 3, 0))
+    else:  # IK solutions
         v = reach.n_solutions.max(axis=1)[idx]
-        colors = ramp_rgb(v, max(1, reach.n_branches))
+        colors = colormap_rgb(v, 1, max(1, reach.n_branches), colormap, reverse)
         colors[v <= 0] = EMPTY_RGB
-        legend = f"{sw(EMPTY_RGB)} 0 · white → deep blue = 1 → {reach.n_branches} IK solutions (best orientation)"
-    else:
-        raise ValueError(f"color_by must be one of {COLOR_BY}")
+        legend = f"{_sw(EMPTY_RGB)} 0 · {colormap}{' reversed' if reverse else ''}: 1 → {reach.n_branches} IK solutions (best orientation)"
     return colors.astype(np.uint8), legend
 
 
@@ -155,13 +223,16 @@ class ReachOverlay:
         *,
         parent_frame: str = "/reach",
         kind: str = "reachable",
-        color_by: str = "pose DOF",
+        color_by: str = "workspace",
         voxel_scale: float = 0.55,
         blob: bool = False,
         step: float | None = None,
         on_select: Callable[[int], None] | None = None,
         cut: tuple[int, float] | None = None,
         dim: bool = False,
+        colormap: str = DEFAULT_COLORMAP,
+        reverse: bool = False,
+        hidden: set[str] | frozenset = frozenset(),
     ):
         self.server = server
         self.reach = reach
@@ -169,7 +240,9 @@ class ReachOverlay:
         self.step = float(step or reach.meta.get("step") or infer_step(reach.positions))
         self.on_select = on_select
         self._kind = self._checked(kind)
-        self._color_by = color_by if reach.task != "position" else "IK solutions"
+        self._color_by = color_mode(reach, color_by)
+        self._colormap, self._reverse, self._hidden = colormap, bool(reverse), frozenset(hidden)
+        self.bins: list[dict] = []
         self._voxel_scale = voxel_scale
         self._blob = blob
         self._cut = cut
@@ -202,7 +275,7 @@ class ReachOverlay:
 
     @color_by.setter
     def color_by(self, value: str):
-        self._color_by = value
+        self._color_by = color_mode(self.reach, value)
         self.redraw()
 
     @property
@@ -214,12 +287,22 @@ class ReachOverlay:
         self._visible = bool(value)
         self.redraw()
 
-    def update(self, *, kind=None, color_by=None, voxel_scale=None, blob=None, cut="keep", dim=None):
-        """Change several settings with one redraw. `cut` = (axis 0/1/2, value[, keep_below]) or None."""
+    def update(self, *, kind=None, color_by=None, voxel_scale=None, blob=None, cut="keep", dim=None, colormap=None,
+               reverse=None, hidden=None, visible=None):
+        """Change several settings with one redraw. `cut` = (axis 0/1/2, value[, keep_below]) or None;
+        `hidden` = the legend bin keys (`bins`) not to draw."""
         if kind is not None:
             self._kind = self._checked(kind)
         if color_by is not None:
-            self._color_by = color_by
+            self._color_by = color_mode(self.reach, color_by)
+        if colormap is not None:
+            self._colormap = colormap
+        if reverse is not None:
+            self._reverse = bool(reverse)
+        if hidden is not None:
+            self._hidden = frozenset(hidden)
+        if visible is not None:
+            self._visible = bool(visible)
         if voxel_scale is not None:
             self._voxel_scale = float(voxel_scale)
         if blob is not None:
@@ -234,6 +317,9 @@ class ReachOverlay:
     def redraw(self):
         r = self.reach
         mask = show_mask(r, self._kind) if self._visible else np.zeros(r.n_positions, bool)
+        bin_key, self.bins = bins(r, self._color_by, self._colormap, self._reverse)
+        if self._hidden:
+            mask = mask & ~np.isin(bin_key, list(self._hidden))
         if self._cut is not None:
             # WHY a cut: from outside you only ever see the shell; the dexterous core is inside.
             axis, value, *rest = self._cut
@@ -242,7 +328,7 @@ class ReachOverlay:
             mask = mask & ((coord <= value + 1e-9) if keep_below else (coord >= value - 1e-9))
         idx = np.nonzero(mask)[0]
         self.shown_index = idx
-        colors, self.legend = colors_and_legend(r, self._color_by, idx)
+        colors, self.legend = colors_and_legend(r, self._color_by, idx, self._colormap, self._reverse)
         # WHY empty points small and faint (Show "All"): full-size grey cubes on every sampled point
         # bury the workspace inside them; small ones still say "sampled here, nothing works".
         empty = np.all(colors == np.asarray(EMPTY_RGB, np.uint8), axis=1)

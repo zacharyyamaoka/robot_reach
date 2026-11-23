@@ -1,17 +1,21 @@
-"""Cartesian reach map: every IK branch at every (position, orientation), with a code each.
+"""Cartesian reach map: every IK solution at every (position, orientation), with a code each.
 
 Kept from bam_reach v1 (the July 2026 FRs) — these are the semantics, re-implemented batched:
 
 - A solution counts only if IK says OK, it is inside the joint limits, FK of it lands back on the
   target (the round trip, "FR - Reach analysis preserves IK FK collision and consistency truth"),
-  and nothing that was checked collides. Unchecked collision is unknown, never "free".
+  and neither your FK/IK nor the optional collision adapter reports a collision for it. Collision is
+  your FK/IK's to report (`codes`); unchecked collision is unknown, never "free".
 - Four workspace kinds are masks over ONE map ("FR - One dexterous reach map derives workspace
   masks"): reachable, 4-DOF, hemisphere, dexterous.
 - Position-only arms get position-only targets ("FR - Lower DoF solvers share the reach-map
   contract"), never a false 6-DOF promise.
 
 New in v2 (Zach, 2026-11-19: "You also need to support like having multiple solutions"): the map
-keeps every IK branch (P, O, S), so the viewer can click through them, and it runs vectorised.
+keeps every IK solution (P, O, S), so the viewer can click through them, and it runs vectorised.
+The S axis is the solver's output slot; array names keep "branch" (`n_branches`), user-facing text
+says "IK solution". When the arm names its IK configurations (`Arm.configurations`), every working
+solution is tagged from its posture (`sol_config`), never from its slot.
 """
 
 from __future__ import annotations
@@ -25,9 +29,13 @@ import numpy as np
 
 from .arm import CHUNK, Arm
 from .codes import Code
+from .configurations import IKConfigurations
 from .orientations import OrientationSet
 
-SCHEMA = "robot_reach.reach_map.v1"
+SCHEMA = "robot_reach.reach_map.v2"
+# v2 (2026-11-23): `sol_config` (the IK configuration of every working solution) and its questions in
+# meta["configurations"]. v1 still loads, without configurations.
+READABLE = ("robot_reach.reach_map.v1", SCHEMA)
 
 
 def _wrap_into_limits(q: np.ndarray, lower: np.ndarray, upper: np.ndarray, revolute: np.ndarray) -> np.ndarray:
@@ -63,6 +71,8 @@ class ReachMap:
     sol_q: np.ndarray  # (K, dof) float32 joints of every OK branch
     seconds: float = 0.0
     meta: dict = field(default_factory=dict)
+    sol_config: np.ndarray | None = None  # (K,) uint8 IK configuration of every OK solution, or None
+    configurations: IKConfigurations | None = None  # the questions behind sol_config (tag function optional)
 
     # ------------------------------------------------------------------ shapes
     @property
@@ -120,7 +130,8 @@ class ReachMap:
         return self.score(kind) >= threshold - 1e-9
 
     def levels(self, threshold: float = 1.0) -> np.ndarray:
-        """(P,) how many pose DOF the arm controls at each point: 0, 3, 4, 5 or 6."""
+        """(P,) the workspace level of each point, as an int key of `codes.LEVEL_NAMES`: 0 unreachable,
+        3 reachable, 4 top-down, 5 hemisphere, 6 dexterous (the highest that holds; nested)."""
         lv = np.where(self.workspace("reachable"), 3, 0)
         if self.task != "position":
             lv = np.where(self.workspace("four_dof", threshold), 4, lv)
@@ -129,7 +140,7 @@ class ReachMap:
         return lv
 
     def solutions(self, p: int) -> list[tuple[int, int, np.ndarray]]:
-        """Every OK branch at position p: [(orientation index, branch index, q), ...]."""
+        """Every OK solution at position p: [(orientation index, solver slot, q), ...]."""
         lo = p * self.n_orientations * self.n_branches
         hi = lo + self.n_orientations * self.n_branches
         a, b = np.searchsorted(self.sol_index, [lo, hi])
@@ -138,6 +149,29 @@ class ReachMap:
             rest = flat - lo
             out.append((int(rest // self.n_branches), int(rest % self.n_branches), q.astype(float)))
         return out
+
+    def solution_configs(self, p: int) -> np.ndarray | None:
+        """(n,) IK configuration index of each `solutions(p)` entry, same order; None without them."""
+        if self.sol_config is None:
+            return None
+        lo = p * self.n_orientations * self.n_branches
+        a, b = np.searchsorted(self.sol_index, [lo, lo + self.n_orientations * self.n_branches])
+        return self.sol_config[a:b]
+
+    def filtered(self, allowed: np.ndarray) -> ReachMap:
+        """The map with only the IK configurations in `allowed` ((n_configurations,) bool): every other
+        working solution becomes ``Code.EXCLUDED``, so counts, levels and scores follow the filter.
+        Needs `sol_config`; all allowed returns self."""
+        allowed = np.asarray(allowed, bool)
+        if self.sol_config is None or allowed.all():
+            return self
+        drop = ~allowed[self.sol_config]
+        code = self.code.copy()
+        code.reshape(-1)[self.sol_index[drop]] = Code.EXCLUDED
+        keep = ~drop
+        return ReachMap(self.arm_name, self.joint_names, self.task, self.positions, self.orientations, code,
+                        self.sol_index[keep], self.sol_q[keep], self.seconds, dict(self.meta),
+                        self.sol_config[keep], self.configurations)
 
     def code_counts(self) -> dict[str, int]:
         """How many branches ended on each code (PAD excluded)."""
@@ -164,9 +198,12 @@ class ReachMap:
             "task": self.task,
             "seconds": self.seconds,
             "meta": self.meta,
+            "configurations": None if self.configurations is None else self.configurations.to_json(),
         }
+        extra = {} if self.sol_config is None else {"sol_config": self.sol_config}
         np.savez_compressed(
             path,
+            **extra,
             meta=np.frombuffer(json.dumps(meta).encode(), np.uint8),
             positions=self.positions,
             R=self.orientations.R,
@@ -183,8 +220,9 @@ class ReachMap:
     def load(cls, path: str | Path) -> ReachMap:
         with np.load(Path(path), allow_pickle=False) as z:
             meta = json.loads(bytes(z["meta"]).decode())
-            if meta.get("schema") != SCHEMA:
-                raise ValueError(f"{path}: schema {meta.get('schema')!r}, expected {SCHEMA!r}")
+            if meta.get("schema") not in READABLE:
+                raise ValueError(f"{path}: schema {meta.get('schema')!r}, expected one of {READABLE}")
+            configs = meta.get("configurations")
             return cls(
                 arm_name=meta["arm_name"],
                 joint_names=tuple(meta["joint_names"]),
@@ -196,6 +234,8 @@ class ReachMap:
                 sol_q=z["sol_q"],
                 seconds=float(meta.get("seconds", 0.0)),
                 meta=meta.get("meta", {}),
+                sol_config=z["sol_config"] if "sol_config" in z else None,
+                configurations=None if not configs else IKConfigurations.from_json(configs),
             )
 
 
@@ -249,12 +289,14 @@ def reach_map(
             code[live] = sub
         # 2. FK round trip
         live = code == Code.OK
+        fk_said = np.full(code.shape, int(Code.OK), np.int8)  # what your FK says about each posture
         if live.any():
-            T_fk, ok = arm.forward(q[live])
+            T_fk, fk_code = arm.forward_codes(q[live])
+            fk_said[live] = fk_code
             tgt = np.repeat(T[:, None], S, axis=1)[live]
             perr = np.linalg.norm(T_fk[:, :3, 3] - tgt[:, :3, 3], axis=1)
             rerr = _rotation_error(T_fk[:, :3, :3], tgt[:, :3, :3], arm.task)
-            bad = ~ok
+            bad = fk_code == Code.FK_FAIL
             sub = code[live]
             sub[bad] = Code.FK_FAIL
             sub[~bad & ((perr > pos_tol) | (rerr > rot_tol))] = Code.FK_MISMATCH
@@ -267,13 +309,16 @@ def reach_map(
                     if both.any():
                         same = both & (np.max(np.abs(q[:, a] - q[:, b]), axis=1) < dedupe_tol)
                         code[same, b] = Code.PAD
-        # 4. collision, 5. torque, 6. singularity — only on survivors
+        # 4. what your FK said about the posture (a self-collision), then the optional collision
+        #    adapter / floor, 5. torque, 6. singularity — only on survivors
+        flagged = (code == Code.OK) & (fk_said != Code.OK)
+        code[flagged] = fk_said[flagged]
         live = code == Code.OK
         if live.any():
-            hit = arm.collides(q[live], floor_z=floor_z)
+            hit = arm.collision_codes(q[live], floor_z=floor_z)
             if hit is not None:
                 sub = code[live]
-                sub[hit] = Code.COLLISION
+                sub[hit != Code.OK] = hit[hit != Code.OK]
                 code[live] = sub
         live = code == Code.OK
         if live.any() and torque_lim is not None:
@@ -312,6 +357,10 @@ def reach_map(
     sol_index = np.concatenate(sol_index) if sol_index else np.zeros(0, np.int64)
     sol_q = np.concatenate(sol_q) if sol_q else np.zeros((0, arm.dof), np.float32)
     order = np.argsort(sol_index, kind="stable")
+    configs = getattr(arm, "configurations", None)
+    sol_config = None
+    if configs is not None and configs.tag is not None:
+        sol_config = configs.configuration(sol_q[order].astype(float)) if len(sol_q) else np.zeros(0, np.uint8)
     return ReachMap(
         arm_name=arm.name,
         joint_names=arm.joint_names,
@@ -323,4 +372,6 @@ def reach_map(
         sol_q=sol_q[order],
         seconds=time.perf_counter() - t0,
         meta={"pos_tol": pos_tol, "rot_tol": rot_tol, "floor_z": floor_z, "singular_tol": singular_tol},
+        sol_config=sol_config,
+        configurations=configs,
     )

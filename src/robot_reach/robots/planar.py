@@ -12,6 +12,7 @@ import numpy as np
 
 from ..arm import Arm
 from ..codes import Code
+from ..configurations import elbow_configurations
 
 D = np.deg2rad
 PLANE_XZ = ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
@@ -150,6 +151,7 @@ def rr(
         masses=tuple(masses),
         torque_limits=tuple(torque_limits),
         plane=PLANE_XZ,
+        configurations=elbow_configurations(("shoulder", "elbow"), skeleton, shoulder=0, elbow=1, tip=2),
         description=f"2-DOF RR, L1={l1} m, L2={l2} m, vertical plane, motor limits {torque_limits} N·m",
         meta={"factory": ["robot_reach.robots", "rr", {"l1": l1, "l2": l2, "lower_deg": list(lower_deg), "upper_deg": list(upper_deg), "masses": list(masses), "torque_limits": list(torque_limits)}]},
     )

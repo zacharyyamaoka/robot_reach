@@ -6,13 +6,13 @@ What Zach asked for (2026-11-19 daily note), and where it is:
 - "see the entire xyz extent of the arm (we show those as points)" -> Workspace: voxels (clickable)
   plus the raw FK cloud.
 - "the number of wrist DOFs you can achieve at each of those points you indicate with color" ->
-  Colour by "pose DOF": 3 reachable, 4 top-down any yaw, 5 hemisphere, 6 dexterous.
+  Colour by "workspace": reachable, top-down (any yaw), hemisphere, dexterous.
 - "put the arm at those points you can click through the different solutions" -> click a voxel,
-  then the Solution slider / Prev / Next walk every (orientation, IK branch) that works there.
+  then the Solution slider / Prev / Next walk every (orientation, IK solution) that works there.
 - "blobs ... may not account for holes" -> Blob: the voxel boundary surface (keeps holes).
 - "a table-like workspace sampled at higher fidelity" + "draw the boxes and/or drop points of
   interest and it could calculate it there" -> Ask here: a box gizmo + Compute box, and Drop POI,
-  with your own approach direction for 4-DOF / hemisphere.
+  the box's own frame giving the approach for top-down / hemisphere.
 - Joint space: the 2R pictures, the joint line and the joint-range bars in the side panel, plus Jog
   sliders that pose the arm and say which code that posture gets.
 
@@ -27,6 +27,19 @@ What Zach asked for (2026-11-19 daily note), and where it is:
 - The FK cloud explains itself.
 - Robot model: URDF visual / collision meshes, a Show switch, opacity, and the parts in contact red.
 
+2026-11-23 feedback, round 2 (Daily Note, "Feedback on Robot Reach"):
+
+- Workspace levels by name (reachable, top-down, hemisphere, dexterous), never "3+ DOF".
+- A settings card (F2): what the map was computed with; edit, Compute workspace, Reset.
+- Colour by: heat maps through a perceptual colormap (viridis default; magma, plasma, inferno, cividis;
+  reverse), good/bad views a traffic light; the legend is a list (E4): swatch, label, count, click to hide.
+- IK configurations (A1): one row per question, toggles, at least one answer each; filters the stepper
+  and the map counts. "IK solution", never "branch", in anything a person reads.
+- Joint ranges: one histogram per joint (B2).
+- Ask here (C2): the box moves AND rotates in the 3-D view (viser's transform gizmo); its Z is the approach
+  axis; the angle range and steps are fields, with the Python line that runs.
+- Robot model: show / hide the skeleton.
+
 House style (viser-3d-viewer): loopback, no logo, Fusion ViewCube, panel docked right, READY line.
 """
 
@@ -37,19 +50,14 @@ import time
 
 import numpy as np
 
-from .codes import CODE_COLORS, CODE_LABELS, LEVEL_NAMES, Code, code_rgb
-from .joint_space import joint_label, joint_labels, joint_map
+from .codes import CODE_COLORS, CODE_LABELS, COLORMAPS, DEFAULT_COLORMAP, LEVEL_MEANINGS, LEVEL_NAMES, Code, code_rgb, is_collision
+from .joint_space import joint_label, joint_labels, joint_map, ranges_of
 from .orientations import OrientationSet
-from .overlay import ReachOverlay, default_show, show_options
+from .overlay import COLOR_BY, ReachOverlay, bins, color_mode
 from .reach import reach_map
-from .sampling import Box
+from .sampling import Box, fit_grid
 
-APPROACHES = {
-    "down (-z)": (0.0, 0.0, -1.0),
-    "forward (+x)": (1.0, 0.0, 0.0),
-    "up (+z)": (0.0, 0.0, 1.0),
-    "left (+y)": (0.0, 1.0, 0.0),
-}
+GRID_SHAPE_CHOICES = ("auto (fewest points)", "box", "sphere", "cylinder", "hull")
 
 
 def _wxyz(R: np.ndarray) -> np.ndarray:
@@ -64,6 +72,71 @@ def _dur(seconds: float) -> str:
 
 def _deg(q) -> str:
     return ", ".join(f"{v:+.1f}" for v in np.rad2deg(np.asarray(q, float)))
+
+
+def rpy_matrix(rpy_deg) -> np.ndarray:
+    """Roll, pitch, yaw (deg) -> 3x3, R = Rz(yaw) Ry(pitch) Rx(roll) (the URDF convention)."""
+    r, p, y = np.deg2rad(np.asarray(rpy_deg, float))
+    cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
+    return np.array([[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                     [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                     [-sp, cp * sr, cp * cr]])
+
+
+def matrix_rpy(R) -> np.ndarray:
+    """3x3 -> roll, pitch, yaw (deg), the inverse of `rpy_matrix` (pitch in [-90, 90])."""
+    R = np.asarray(R, float)
+    pitch = np.arcsin(np.clip(-R[2, 0], -1.0, 1.0))
+    if abs(np.cos(pitch)) > 1e-9:
+        roll, yaw = np.arctan2(R[2, 1], R[2, 2]), np.arctan2(R[1, 0], R[0, 0])
+    else:  # gimbal lock: put it all in yaw
+        roll, yaw = 0.0, np.arctan2(-R[0, 1], R[1, 1])
+    return np.rad2deg([roll, pitch, yaw])
+
+
+def wxyz_matrix(wxyz) -> np.ndarray:
+    w, x, y, z = np.asarray(wxyz, float) / max(np.linalg.norm(wxyz), 1e-12)
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def box_orientations(R_box, max_tilt_deg: float, tilt_step_deg: float, roll_step_deg: float) -> OrientationSet:
+    """The orientation set an Ask-here box asks: its approach is the box's -Z (straight down when the box
+    is level: box +Z is the workspace's up), tilted out to `max_tilt_deg` in `tilt_step_deg` rings, rolled
+    every `roll_step_deg`."""
+    approach = -np.asarray(R_box, float)[:, 2]
+    n_rolls = max(1, int(round(360.0 / max(roll_step_deg, 1e-6))))
+    return OrientationSet.sample(approach=tuple(approach), tilt_step_deg=max(float(tilt_step_deg), 1.0), n_rolls=n_rolls,
+                                 max_tilt_deg=float(np.clip(max_tilt_deg, 0.0, 180.0)))
+
+
+def box_positions(center, size, rpy_deg, step) -> np.ndarray:
+    """An Ask-here box's grid: `Box.grid` in the box's own frame, rotated by `rpy_deg` and moved to `center`."""
+    local = Box((0.0, 0.0, 0.0), tuple(float(v) for v in size)).grid(step)
+    return local @ rpy_matrix(rpy_deg).T + np.asarray(center, float)
+
+
+def toggle_choice(selected: set[int], option: int, n_options: int) -> set[int]:
+    """One press on an IK-configuration toggle. Each question keeps at least one answer (Zach, 2026-11-23:
+    "please make the buttons toggable though if I press front then back should light up. so each
+    configuration always has at least 1 and at most 2"): pressing an unlit answer lights it; pressing a lit
+    one turns it off, and when it was the only one lit the other answer lights instead."""
+    selected = set(selected)
+    if option not in selected:
+        return selected | {option}
+    if len(selected) > 1:
+        return selected - {option}
+    if n_options == 2:
+        return {1 - option}
+    return selected
+
+
+CHIP_ON, CHIP_OFF = "✓ ", "○ "
+
+
+def chip_labels(options, selected) -> tuple[str, ...]:
+    return tuple((CHIP_ON if i in selected else CHIP_OFF) + o for i, o in enumerate(options))
 
 
 def _deg_labelled(q) -> str:
@@ -85,6 +158,40 @@ ESCAPE_JS = """(() => {
     if (b) b.click();
   });
 })();""" % CLEAR_LABEL
+
+# WHY CSS from a script: viser buttons and checkbox labels have no colour per option. This lights the
+# IK-configuration chips ("✓ front" filled, "○ back" outlined) and draws each legend row's swatch and count
+# bar from `window.__rrLegend` ({label text: {rgb, frac}}), re-applied on every DOM change. Only inline
+# styles are touched (no nodes added), so React's re-renders stay safe. Without it, the ✓/○ marks and
+# the counts in the labels still say everything.
+DECORATE_JS = """(() => {
+  if (window.__rrDecor) return;
+  window.__rrDecor = true;
+  const apply = () => {
+    document.querySelectorAll('button').forEach((b) => {
+      const t = (b.textContent || '').trim();
+      if (t.startsWith('\u2713 ')) {
+        b.style.background = '#228be6'; b.style.color = '#fff'; b.style.border = '1px solid #228be6';
+      } else if (t.startsWith('\u25cb ')) {
+        b.style.background = '#fff'; b.style.color = '#495057'; b.style.border = '1px solid #ced4da';
+      }
+    });
+    const legend = window.__rrLegend || {};
+    document.querySelectorAll('label').forEach((el) => {
+      const t = (el.textContent || '').trim();  // viser puts <wbr> after hyphens: read the text, not a leaf
+      if (!t || !(t in legend)) return;
+      const row = legend[t];
+      const c = 'rgb(' + row.rgb.join(',') + ')';
+      const pct = Math.round(100 * row.frac);
+      el.style.borderLeft = '12px solid ' + c;
+      el.style.paddingLeft = '6px';
+      el.style.background = 'linear-gradient(to right, rgba(' + row.rgb.join(',') + ',0.22) ' + pct + '%, transparent ' + pct + '%)';
+    });
+  };
+  window.__rrApply = apply;
+  new MutationObserver(() => apply()).observe(document.body, {subtree: true, childList: true, characterData: true});
+  apply();
+})();"""
 
 MODEL_SHOWS = ("visual", "collision", "both", "none")
 COLLISION_MESH_RGB = (240, 170, 70)  # a collision mesh that is not in contact: amber, see-through by default
@@ -195,18 +302,18 @@ def mesh_opacity(mesh, show: str, touching: bool, slider: float) -> float | None
 
 
 def collision_note(arm, floor_z) -> str:
-    """What the collision check actually uses, in words (it may not be the drawn meshes)."""
+    """Where collision comes from for this arm, in words. WHY (Zach, 2026-11-23: "reach doesn't really know
+    anything about collision"): collision is a code the arm's FK/IK return; the library only colours it."""
     parts = []
     if floor_z is not None:
         n = len(arm.chain(np.asarray(arm.meta.get("home", np.zeros(arm.dof)), float)[None])[0]) - 1
-        parts.append(f"the floor at z = {floor_z:+.3f} m, tested on the skeleton's {n} moving joint points (a point below it = collision)")
+        parts.append(f"an optional floor at z = {floor_z:+.3f} m, tested on the skeleton's {n} moving joint points (environment collision)")
     if arm.collision is not None:
-        parts.append("the arm's own collision function (it does not say which parts touch)")
-    if not parts:
-        return "No collision is checked for this arm."
-    note = "Collision is checked against " + " and ".join(parts) + "."
+        parts.append("the arm's collision adapter (it does not say which parts touch)")
+    note = ("Collision is whatever this arm's FK/IK report (self-collision, environment collision); "
+            + ("these add " + " and ".join(parts) + "." if parts else "nothing else is checked here: the arm is in free space."))
     if any(mesh_role(m) != "visual" for m in arm.meshes):
-        note += " The URDF collision meshes are drawn, not checked; no self-collision."
+        note += " The URDF collision meshes are drawn, not checked."
     return note
 
 
@@ -354,18 +461,21 @@ class ReachViewer:
         segs = segs[np.all(np.isfinite(segs.reshape(len(segs), -1)), axis=1)]
         s = self.server.scene
         thick = max(0.008, self.extent * 0.022) * (0.45 if self.mesh_handles and self._model_show() != "none" else 1.0)
-        self.arm_lines = s.add_line_segments("/arm/links", segs.astype(np.float32), np.array(color, np.uint8), thickness=thick)
+        skeleton_on = self._skeleton_on()
+        self.arm_lines = s.add_line_segments("/arm/links", segs.astype(np.float32), np.array(color, np.uint8), thickness=thick,
+                                             visible=skeleton_on)
         joints = chain[np.all(np.isfinite(chain), axis=1)]
         self.arm_joints = s.add_point_cloud("/arm/joints", joints.astype(np.float32), np.array((90, 96, 108), np.uint8),
-                                            point_size=thick * 1.25, point_shape="circle")
+                                            point_size=thick * 1.25, point_shape="circle", visible=skeleton_on)
         floor = self.result.config.get("floor_z")
-        hit = floor_contacts(chain, floor) if code == Code.COLLISION else np.zeros(len(chain), bool)
+        colliding = code is not None and bool(is_collision(code))
+        hit = floor_contacts(chain, floor) if colliding else np.zeros(len(chain), bool)
         if hit.any():
             s.add_point_cloud("/arm/contacts", chain[hit].astype(np.float32), np.array(CODE_COLORS[Code.COLLISION], np.uint8),
                               point_size=max(0.02, self.extent * 0.045), point_shape="circle")
         else:
             self._remove("/arm/contacts")
-        self.contact = contact_parts(self.arm, q, floor) if code == Code.COLLISION else set()
+        self.contact = contact_parts(self.arm, q, floor) if colliding else set()
         self._pose_meshes()
         self._sync_dim()
 
@@ -395,6 +505,13 @@ class ReachViewer:
                                   # link tubes do), and a one-sided render culls those parts away.
                                   side="double")
             self.mesh_handles.append((i, h))
+
+    def _skeleton_on(self) -> bool:
+        """WHY a switch (Zach, 2026-11-23: "For the URDF you should have an option to show or hide the
+        skeleton"): with meshes drawn the skeleton is a second picture of the same arm. An arm without
+        meshes always shows it (it is the only drawing)."""
+        h = getattr(self, "g_skeleton", None)
+        return True if h is None or not self.mesh_handles else bool(h.value)
 
     def _model_show(self) -> str:
         return self.g_model.value if getattr(self, "g_model", None) is not None else "visual"
@@ -426,17 +543,22 @@ class ReachViewer:
         g = self.server.gui
         res, info = self.result, self.result.arm_info
         keep = self._gui_handles.append
-        keep(g.add_markdown(self._header_md(), order=-90))
+        self.g_header = g.add_markdown(self._header_md(), order=-90)
+        keep(self.g_header)
 
-        with self._folder("Workspace"):
+        self.g_ws_folder = self._folder("Workspace")
+        with self.g_ws_folder:
             if self.reach is not None:
                 self._build_workspace_controls(g)
-            self.g_legend = g.add_markdown("")
-            self.g_cloud = g.add_checkbox("FK cloud", initial_value=self.reach is None, hint=self._cloud_help(plain=True))
-            self.g_cloud_md = g.add_markdown(self._cloud_help())
+            self.g_legend = g.add_markdown("", order=60)
+            if self.reach is not None:
+                self._build_view_controls(g)
+            self.g_cloud = g.add_checkbox("FK cloud", initial_value=self.reach is None, hint=self._cloud_help(plain=True), order=80)
+            self.g_cloud_md = g.add_markdown(self._cloud_help(), order=81)
             self.g_cloud.on_update(lambda _e: setattr(self.cloud_handle, "visible", self.g_cloud.value))
 
         if self.reach is not None:
+            self._build_config_controls(g)
             self._build_selection_controls(g)
 
         self._build_model_controls(g)
@@ -456,6 +578,7 @@ class ReachViewer:
                 names = tuple(self._figures)
                 self.g_fig = g.add_dropdown("Picture", names, initial_value=names[0])
                 self.g_img = g.add_image(self._figures[names[0]], format="png")
+                self._img_shown = self._figures[names[0]]
                 self.g_fig_md = g.add_markdown("")
                 self.g_fig.on_update(lambda _e: self._picture_changed())
                 self._build_sweep_controls(g)
@@ -479,32 +602,310 @@ class ReachViewer:
         elif self.reach is not None:
             keep(g.add_markdown("_Ask here needs the arm's IK: this result was loaded without a rebuildable arm._"))
 
+    # ------------------------------------------------------------------ workspace: settings card (F2)
     def _build_workspace_controls(self, g):
+        """The settings card (Zach's pick F2, 2026-11-23: "I like F2 used setting cards"): the fields show
+        what this map was computed with; editing one lights Compute workspace and hides the old map until
+        it is recomputed or Reset."""
+        from .analyze import settings_of
+
+        st = settings_of(self.result)
+        orient = st.get("orientation") or {}
+        can = self.arm is not None and self.arm.ik is not None
+        self._settings_base = {
+            "step": round(float(st["step_m"]) * 1000, 1),
+            "shape": GRID_SHAPE_CHOICES[0] if st.get("grid_shape_auto") else st.get("grid_shape", "box"),
+            "tilt": float(orient.get("tilt_step_deg") or 45.0),
+            "roll": float(orient.get("roll_step_deg") or 360.0),
+            "max_tilt": float(orient.get("tilt_max_deg", 180.0)),
+        }
+        b = self._settings_base
+        self.g_set_md = g.add_markdown("**Computed with** <small>— edit to change" + ("" if can else " (needs the live arm)") + "</small>", order=1)
+        self.g_set_step = g.add_number("Voxel size (mm)", initial_value=b["step"], min=1.0, step=1.0, order=2, disabled=not can,
+                                       hint="Grid step: the distance between neighbouring grid points")
+        self.g_set_shape = g.add_dropdown("Grid shape", GRID_SHAPE_CHOICES if b["shape"] in GRID_SHAPE_CHOICES else (*GRID_SHAPE_CHOICES, b["shape"]),
+                                          initial_value=b["shape"], order=3, disabled=not can,
+                                          hint="The volume the grid is kept inside; auto = the shape with the fewest points that holds every FK point (+ one voxel)")
         oriented = self.reach.task != "position"
-        colors = ["pose DOF", "IK solutions", "fraction of orientations", "consistency"] if oriented else ["IK solutions", "consistency"]
-        self.g_color = g.add_dropdown("Colour by", tuple(colors), initial_value=colors[0],
-                                      hint="consistency: did FK of each IK answer land back on the target")
-        self._show_keys = show_options(self.reach, colors[0])
-        self.g_show = g.add_dropdown("Show", tuple(self._show_keys), initial_value=default_show(self.reach, colors[0]),
-                                     hint="All = every grid point that was sampled, including those where nothing works")
-        # WHY bigger for planar maps: one layer of voxels hides nothing, and gaps make clicks miss
-        self.g_voxel = g.add_slider("Voxel size", min=0.1, max=1.0, step=0.05, initial_value=0.9 if self.planar else 0.55)
-        self.g_cut = g.add_dropdown("Cut", ("none", "x", "y", "z"), initial_value="none")
-        self.g_cut_at = g.add_slider("Cut at (m)", min=-1.0, max=1.0, step=0.005, initial_value=0.0, disabled=True)
-        self.g_blob = g.add_checkbox("Blob (surface)", initial_value=False)
-        for h in (self.g_show, self.g_voxel, self.g_blob, self.g_cut_at):
+        self.g_set_tilt = g.add_number("Orientation step (°)", initial_value=b["tilt"], min=5.0, max=180.0, step=5.0, order=4,
+                                       disabled=not can, visible=oriented, hint="Tilt rings: angle between approach directions")
+        self.g_set_roll = g.add_number("Roll step (°)", initial_value=b["roll"], min=5.0, max=360.0, step=5.0, order=5,
+                                       disabled=not can, visible=oriented, hint="Rolls about the tool axis at each direction")
+        self.g_set_max = g.add_number("Angles up to (°)", initial_value=b["max_tilt"], min=0.0, max=180.0, step=5.0, order=6,
+                                      disabled=not can, visible=oriented, hint="Tilt from the approach axis: 0 = straight down only, 180 = every direction")
+        self.g_set_btns = g.add_button("Compute workspace", disabled=True, order=7)
+        self.g_set_reset = g.add_button("Reset", disabled=True, order=8, color="gray")
+        self.g_set_used = g.add_markdown(self._settings_used_md(), order=9)
+        for h in (self.g_set_step, self.g_set_shape, self.g_set_tilt, self.g_set_roll, self.g_set_max):
+            h.on_update(lambda _e: self._settings_changed())
+        self.g_set_btns.on_click(lambda _e: self._compute_workspace())
+        self.g_set_reset.on_click(lambda _e: self._settings_reset())
+        self._settings_dirty = False
+
+    def _settings_values(self) -> dict:
+        return {"step": float(self.g_set_step.value), "shape": self.g_set_shape.value, "tilt": float(self.g_set_tilt.value),
+                "roll": float(self.g_set_roll.value), "max_tilt": float(self.g_set_max.value)}
+
+    def _settings_used_md(self) -> str:
+        from .analyze import settings_of
+
+        st = settings_of(self.result)
+        r = self.reach
+        lattice = " × ".join(str(n) for n in st.get("lattice", []))
+        shape = st.get("grid_shape_text", st.get("grid_shape", "box"))
+        counts = st.get("grid_shape_points") or {}
+        alt = (" (box would be " + f"{counts['box']:,}" + ")") if counts.get("box") and st.get("grid_shape") != "box" else ""
+        orient = f" × {r.n_orientations} orientations" if r.task != "position" else ""
+        return (f"<small>used: {r.n_positions:,} points ({lattice} lattice, inside the {shape}{alt}){orient} "
+                f"= {r.n_positions * r.n_orientations:,} targets in {_dur(r.seconds)}"
+                + (f"<br>{r.orientations.describe()}" if r.task != "position" else "") + "</small>")
+
+    def _settings_changed(self):
+        if getattr(self, "_settings_quiet", False):
+            return
+        now, base = self._settings_values(), self._settings_base
+        names = {"step": ("voxel size", "mm"), "shape": ("grid shape", ""), "tilt": ("orientation step", "°"),
+                 "roll": ("roll step", "°"), "max_tilt": ("angles up to", "°")}
+        changed = [k for k in base if (now[k] != base[k] if k == "shape" else abs(now[k] - base[k]) > 1e-9)]
+        self._settings_dirty = bool(changed)
+        self.g_set_btns.disabled = not changed
+        self.g_set_reset.disabled = not changed
+        self.g_set_btns.color = "orange" if changed else None
+        if changed:
+            was = " · ".join(f"{names[k][0]} was {base[k]:g}{names[k][1]}" if k != "shape" else f"grid shape was {base[k]}" for k in changed)
+            est = self._estimate_targets(now)
+            self.g_set_used.content = (f"<small><b>Edited</b> ({was}). The old map is hidden until you Compute workspace or Reset."
+                                       + (f"<br>new: ≈ {est[0]:,} points × {est[1]} orientations ≈ {_dur(est[2])}" if est else "") + "</small>")
+        else:
+            self.g_set_used.content = self._settings_used_md()
+        self._redraw_workspace()
+
+    def _estimate_targets(self, v: dict):
+        """(points, orientations, seconds) the edited settings would compute, from this map's own rate."""
+        try:
+            positions, _shape, _counts = self._grid_for(v)
+            O = 1 if self.reach.task == "position" else len(self._orientations_for(v))
+        except Exception:
+            return None
+        rate = self.reach.seconds / max(1, self.reach.n_positions * self.reach.n_orientations)
+        return len(positions), O, rate * len(positions) * O
+
+    def _grid_for(self, v: dict):
+        pts = self.result.cloud_p[np.all(np.isfinite(self.result.cloud_p), axis=1)]
+        shapes = ("box", "sphere", "cylinder", "hull") if v["shape"].startswith("auto") else (v["shape"],)
+        return fit_grid(pts, max(v["step"], 0.5) / 1000.0, shapes=shapes)
+
+    def _orientations_for(self, v: dict) -> OrientationSet:
+        approach = tuple(self.reach.orientations.approach) if self.reach is not None else (0.0, 0.0, -1.0)
+        n_rolls = max(1, int(round(360.0 / max(v["roll"], 1e-6))))
+        return OrientationSet.sample(approach=approach, tilt_step_deg=v["tilt"], n_rolls=n_rolls, max_tilt_deg=v["max_tilt"])
+
+    def _settings_reset(self):
+        self._settings_quiet = True
+        try:
+            b = self._settings_base
+            self.g_set_step.value, self.g_set_shape.value = b["step"], b["shape"]
+            self.g_set_tilt.value, self.g_set_roll.value, self.g_set_max.value = b["tilt"], b["roll"], b["max_tilt"]
+        finally:
+            self._settings_quiet = False
+        self._settings_changed()
+
+    def _compute_workspace(self):
+        """Recompute the reach map with the card's settings (in memory; the saved result is unchanged)."""
+        from .analyze import settings_of
+        from .joint_space import joint_ranges
+
+        if self.arm is None or self.arm.ik is None:
+            return
+        v = self._settings_values()
+        positions, shape, counts = self._grid_for(v)
+        O = None if self.reach.task == "position" else self._orientations_for(v)
+        n_targets = len(positions) * (1 if O is None else len(O))
+        if n_targets > 4_000_000:
+            self.g_set_used.content = f"<small><b>{n_targets:,} targets is too many</b> (limit 4,000,000): raise the voxel size or a step.</small>"
+            return
+        self.g_set_btns.disabled = True
+        self.g_set_used.content = f"<small>computing {n_targets:,} targets…</small>"
+        cfg = self.result.config
+        rm = reach_map(self.arm, positions, O, floor_z=cfg.get("floor_z"), singular_tol=cfg.get("singular_tol", 0.0), w_ref=cfg.get("w_ref"))
+        step = max(v["step"], 0.5) / 1000.0
+        lattice = [int(len(np.unique(np.round(Box.around(self.result.cloud_p[np.all(np.isfinite(self.result.cloud_p), axis=1)]).grid(step)[:, a], 9))))
+                   for a in range(3)]
+        st = dict(settings_of(self.result))
+        st.update({"step_m": step, "grid_shape": shape.kind, "grid_shape_auto": v["shape"].startswith("auto"),
+                   "grid_shape_text": shape.describe(), "grid_shape_points": counts, "lattice": lattice, "grid_points": len(positions),
+                   "orientation": None if O is None else O.resolution()})
+        cfg.update({"step": step, "settings": st, "grid_shape": shape.to_json(), "orientations": rm.n_orientations})
+        self.result.reach = rm
+        self.result.ranges = joint_ranges(self.arm, rm)
+        self.reach = rm
+        self.step = step
+        self.layer_reach = None
+        self._filter_cache = {}
+        self._settings_base = {**v, "step": round(step * 1000, 1)}
+        self._settings_changed()
+        self.g_set_used.content = self._settings_used_md() + "<small> · recomputed here, not saved</small>"
+        self.g_header.content = self._header_md()
+        self._refresh_ranges_figure()
+        if self.sel_point is not None:
+            self._clear_selection()
+
+    # ------------------------------------------------------------------ workspace: colour, legend list, view
+    def _build_view_controls(self, g):
+        oriented = self.reach.task != "position"
+        colors = list(COLOR_BY) if oriented else ["workspace", "IK solutions", "consistency"]
+        self.g_color = g.add_dropdown("Colour by", tuple(colors), initial_value=colors[0], order=10,
+                                      hint="workspace: the best level each point reaches · consistency: did FK of each IK answer land back on the target")
+        self.g_cmap = g.add_dropdown("Colours", tuple(COLORMAPS), initial_value=DEFAULT_COLORMAP, order=11,
+                                     hint="Perceptually uniform maps (matplotlib's); consistency is always a traffic light")
+        self.g_reverse = g.add_checkbox("Reverse (high = dark)", initial_value=False, order=12)
+        self._hidden = {"0"}  # the empty bin starts hidden: the map shows where something works
+        self._legend_rows: list[tuple[str, object]] = []
+        self._legend_mode = None
+        self.g_legend_note = g.add_markdown("", order=50)
+        # WHY "Cube size": "Voxel size" now names the grid step in the settings card above
+        self.g_voxel = g.add_slider("Cube size (drawn)", min=0.1, max=1.0, step=0.05, initial_value=0.9 if self.planar else 0.55, order=61)
+        self.g_cut = g.add_dropdown("Cut", ("none", "x", "y", "z"), initial_value="none", order=62)
+        self.g_cut_at = g.add_slider("Cut at (m)", min=-1.0, max=1.0, step=0.005, initial_value=0.0, disabled=True, order=63)
+        self.g_blob = g.add_checkbox("Blob (surface)", initial_value=False, order=64)
+        for h in (self.g_voxel, self.g_blob, self.g_cut_at, self.g_reverse):
             h.on_update(lambda _e: self._redraw_workspace())
+        self.g_cmap.on_update(lambda _e: self._redraw_workspace())
         self.g_color.on_update(lambda _e: self._color_changed())
         self.g_cut.on_update(lambda _e: self._cut_changed())
 
     def _color_changed(self):
-        """The Show choices follow what is coloured; "All" stays All, anything else resets to the default."""
-        keep_all = self.g_show.value == "All"
-        self._show_keys = show_options(self.reach, self.g_color.value)
-        target = "All" if keep_all else default_show(self.reach, self.g_color.value)
-        self.g_show.options = tuple(self._show_keys)
-        self.g_show.value = target
+        """The legend list follows what is coloured (Zach, 2026-11-23: "The show should also update to match
+        what you are coloring by"); its empty bin starts hidden again."""
+        self._hidden = {"0"}
+        heat = color_mode(self.reach, self.g_color.value) != "consistency"
+        self.g_cmap.disabled = not heat
+        self.g_reverse.disabled = not heat
         self._redraw_workspace()
+
+    def _sync_legend(self, rows: list[dict], mode: str, total: int):
+        """One checkbox per legend bin: label + count, swatch and count bar drawn by DECORATE_JS."""
+        labels = [f"{r['label']} · {r['count']:,}" for r in rows]
+        keys = [r["key"] for r in rows]
+        if self._legend_mode != mode or [k for k, _ in self._legend_rows] != keys:
+            for _k, h in self._legend_rows:
+                h.remove()
+            self._legend_rows = []
+            with self.g_ws_folder:
+                for i, (row, label) in enumerate(zip(rows, labels)):
+                    h = self.server.gui.add_checkbox(label, initial_value=row["key"] not in self._hidden, order=20 + i * 0.01,
+                                                     hint=row["meaning"])
+                    h.on_update(lambda e, key=row["key"]: self._legend_toggled(key, e.target.value))
+                    self._legend_rows.append((row["key"], h))
+            self._legend_mode = mode
+        else:
+            self._legend_quiet = True  # WHY: keep the ticks true to `_hidden` without re-entering the toggle
+            try:
+                for (key, h), label in zip(self._legend_rows, labels):
+                    if h.label != label:
+                        h.label = label
+                    if bool(h.value) != (key not in self._hidden):
+                        h.value = key not in self._hidden
+            finally:
+                self._legend_quiet = False
+        top = max([r["count"] for r in rows] + [1])
+        legend = {label: {"rgb": [int(c) for c in r["rgb"]], "frac": r["count"] / top} for label, r in zip(labels, rows)}
+        try:
+            import json
+
+            from viser_3d_viewer.shim import send_replaceable_javascript
+
+            send_replaceable_javascript(self.server, f"window.__rrLegend = {json.dumps(legend)}; window.__rrApply && window.__rrApply();",
+                                        key="robot-reach-legend")
+        except Exception:  # plain viser: the counts in the labels still say it
+            pass
+
+    def _legend_toggled(self, key: str, on: bool):
+        if getattr(self, "_legend_quiet", False):
+            return
+        (self._hidden.discard if on else self._hidden.add)(key)
+        self._redraw_workspace()
+
+    # ------------------------------------------------------------------ IK configurations (A1)
+    def _build_config_controls(self, g):
+        """One row per question, toggles (Zach's pick A1, 2026-11-23); filters the solution stepper, the map
+        and the joint-range histograms. Tags come from each solution's posture (`configurations`)."""
+        self._filter_cache = {}
+        r = self.reach
+        cfgs = r.configurations
+        self._cfg_sel = None
+        if cfgs is None or r.sol_config is None or not cfgs.questions:
+            return
+        self._cfg_sel = [set(range(len(q.options))) for q in cfgs.questions]
+        with self._folder("IK configurations"):
+            g.add_markdown("<small>Which IK solutions count. Each question keeps at least one answer; "
+                           "a solution is tagged from its own posture, never from the solver's slot.</small>")
+            self.g_cfg_rows = []
+            for i, question in enumerate(cfgs.questions):
+                h = g.add_button_group(cfgs.label(question), chip_labels(question.options, self._cfg_sel[i]), hint=question.rule)
+                h.on_click(lambda e, i=i: self._cfg_clicked(i, e.target.value))
+                self.g_cfg_rows.append(h)
+            self.g_cfg_md = g.add_markdown(self._cfg_summary())
+
+    def _cfg_clicked(self, i: int, label: str):
+        question = self.reach.configurations.questions[i]
+        option = question.options.index(label[len(CHIP_ON):] if label.startswith((CHIP_ON, CHIP_OFF)) else label)
+        self._cfg_sel[i] = toggle_choice(self._cfg_sel[i], option, len(question.options))
+        self.g_cfg_rows[i].options = chip_labels(question.options, self._cfg_sel[i])
+        self.g_cfg_md.content = self._cfg_summary()
+        self._refresh_ranges_figure()
+        self._redraw_workspace()
+        if self.sel_point is not None:
+            self._select(self.sel_point)
+
+    def _allowed(self):
+        cfgs = self.reach.configurations if self.reach is not None else None
+        if not getattr(self, "_cfg_sel", None) or cfgs is None:
+            return None
+        allowed = cfgs.allowed_from(self._cfg_sel)
+        return None if allowed.all() else allowed
+
+    def _filtered(self, reach):
+        """`reach` with only the allowed IK configurations (cached per layer and choice)."""
+        allowed = self._allowed()
+        if reach is None or allowed is None or reach.sol_config is None:
+            return reach
+        key = (id(reach), tuple(bool(v) for v in allowed))
+        if key not in self._filter_cache:
+            self._filter_cache = {k: v for k, v in self._filter_cache.items() if k[0] == id(reach)}
+            self._filter_cache[key] = reach.filtered(allowed)
+        return self._filter_cache[key]
+
+    def _cfg_summary(self) -> str:
+        cfgs = self.reach.configurations
+        allowed = cfgs.allowed_from(self._cfg_sel)
+        r = self._filtered(self.reach)
+        lv = r.levels()
+        kinds = (3, 4, 5, 6) if r.task != "position" else (3,)
+        counts = " · ".join(f"{LEVEL_NAMES[k]} {int((lv >= k).sum()):,}" for k in kinds)
+        return (f"<small><b>{int(allowed.sum())} of {cfgs.n_configurations} IK configurations allowed</b> → {counts} points; "
+                f"{len(r.sol_index):,} working IK solutions</small>")
+
+    def _refresh_ranges_figure(self):
+        """Joint-range histograms of the working solutions the current filter allows."""
+        if "joint ranges" not in getattr(self, "_figures", {}) or self.reach is None:
+            return
+        try:
+            from .plots import figure_rgb, ranges_figure
+        except ImportError:
+            return
+        r = self._filtered(self.reach)
+        info = self.result.arm_info
+        limits = np.stack([info["lower"], info["upper"]], axis=1).astype(float)
+        ranges = ranges_of(info["joint_names"], limits, r.sol_q.astype(float))
+        note = "" if r is self.reach else f"filtered: {self._cfg_summary_plain()}"
+        self._figures["joint ranges"] = figure_rgb(ranges_figure(ranges, info["name"], note=note))
+        if self.g_fig.value == "joint ranges":
+            self._picture_changed()
+
+    def _cfg_summary_plain(self) -> str:
+        cfgs = self.reach.configurations
+        return " · ".join(f"{q.name} {'/'.join(q.options[i] for i in sorted(sel))}" for q, sel in zip(cfgs.questions, self._cfg_sel))
 
     def _build_selection_controls(self, g):
         with self._folder("Selected point"):
@@ -527,10 +928,13 @@ class ReachViewer:
         how = (f"a {round(n ** (1 / dof))}-per-joint grid" if dof <= 2 else f"{n:,} uniform random samples") + " of the joint limits"
         grid = ""
         if self.reach is not None:
-            grid = (f" Its bounding box is the grid the voxel workspace was computed on: {self.reach.n_positions:,} points, "
+            from .analyze import settings_of
+
+            shape = settings_of(self.result).get("grid_shape_text", "box")
+            grid = (f" The voxel grid is fitted around it ({shape}, one voxel of padding): {self.reach.n_positions:,} points, "
                     f"step {self.step * 1000:.0f} mm. The voxels themselves come from IK at each grid point, not from these dots.")
         text = (f"FK cloud: {how}, each pushed through FK; a dot is where the tool lands.{grid} "
-                f"Dot colour = that joint posture's own check (limits, linkage, floor collision, torque, singular):")
+                f"Dot colour = that joint posture's own check (limits, what the FK reports, torque, singular):")
         if plain:
             return text.rstrip(":") + "."
         return f"<small>{text} " + self._code_legend(np.unique(res.cloud_code))[len("<small>"):]
@@ -542,9 +946,31 @@ class ReachViewer:
         return f"<small>Orientations tried here: {reach.orientations.describe()}.</small>"
 
     def _ask_resolution(self):
+        """C2: the angle set and box frame as numbers, with the Python line that runs."""
         O = self._orientations()
-        self.g_ask_res_md.content = ("<small>Position only: no orientations.</small>" if O is None
-                                     else f"<small>Compute box / Drop POI try: {O.describe()}.</small>")
+        c = np.asarray(self.g_box_center.value, float)
+        size = np.asarray(self.g_box_size.value, float)
+        rpy = np.asarray(self.g_box_rpy.value, float)
+        try:
+            n_pts = len(box_positions(c, size, rpy, float(self.g_box_step.value)))
+        except Exception:
+            n_pts = 0
+        rate = self.reach.seconds / max(1, self.reach.n_positions * self.reach.n_orientations)
+        n_o = 1 if O is None else len(O)
+        fmt = lambda v: ", ".join(f"{float(x) + 0.0:.3g}" for x in np.round(np.asarray(v, float), 4))  # noqa: E731  (+0.0: no "-0")
+        if O is None:
+            what = "<small>Position only: no orientations.</small>"
+            code = f"box_positions(center=({fmt(c)}), size=({fmt(size)}), rpy_deg=({fmt(rpy)}), step={float(self.g_box_step.value):g})"
+        else:
+            r = O.resolution()
+            what = (f"<small><b>{r['n_directions']} directions × {r['n_rolls']} rolls = {r['n_orientations']} orientations</b> per point · "
+                    f"box of {n_pts:,} points ≈ {_dur(rate * n_pts * n_o)} · approach = the box's −Z "
+                    f"({fmt(O.approach)}): straight down when the box is level<br>{O.describe()}</small>")
+            code = (f"box_positions(center=({fmt(c)}), size=({fmt(size)}), rpy_deg=({fmt(rpy)}), step={float(self.g_box_step.value):g})\n"
+                    f"OrientationSet.sample(approach=({fmt(O.approach)}), tilt_step_deg={float(self.g_ask_tilt.value):g}, "
+                    f"n_rolls={r['n_rolls']}, max_tilt_deg={float(self.g_ask_max.value):g})")
+        self.g_ask_res_md.content = what
+        self.g_ask_code.content = f"```python\n{code}\n```"
 
     def _build_model_controls(self, g):
         """Robot model: which meshes to draw (visual / collision / both / none), opacity, and what the
@@ -553,11 +979,15 @@ class ReachViewer:
             return
         with self._folder("Robot model", expand_by_default=bool(self.mesh_handles)):
             shows = model_shows([self.arm.meshes[i] for i, _ in self.mesh_handles])
+            self.g_skeleton = None
             if self.mesh_handles:
                 self.g_model = g.add_dropdown("Show mesh", shows, initial_value=shows[0])
                 self.g_opacity = g.add_slider("Opacity", min=0.1, max=1.0, step=0.05, initial_value=1.0)
+                self.g_skeleton = g.add_checkbox("Show skeleton", initial_value=True,
+                                                 hint="The chain of joint points drawn over the meshes")
                 self.g_model.on_update(lambda _e: self._model_changed())
                 self.g_opacity.on_update(lambda _e: self._pose_meshes())
+                self.g_skeleton.on_update(lambda _e: self._model_changed())
             else:
                 self.g_model = None
                 self.g_opacity = None
@@ -570,18 +1000,20 @@ class ReachViewer:
 
     def _model_changed(self):
         if self.arm_q is not None:
-            self._draw_arm(self.arm_q, code=Code.COLLISION if self.contact else None)
+            self._draw_arm(self.arm_q, code=Code.ENVIRONMENT_COLLISION if self.contact else None)
 
     # ------------------------------------------------------------------ joint-space pictures
     def _picture_changed(self):
         name = self.g_fig.value
-        self.g_img.image = self._figures[name]
+        if getattr(self, "_img_shown", None) is not self._figures[name]:  # WHY: re-sending the same image revokes its blob mid-load
+            self.g_img.image = self._figures[name]
+            self._img_shown = self._figures[name]
         jm = self._maps_by_name.get(name)
         info = self.result.arm_info
         limits = np.stack([info["lower"], info["upper"]], axis=1).astype(float)
         if jm is None:
-            text = ("One bar per joint: light = its limits, dark = how often the working IK solutions use each angle, "
-                    "ticks = the range they use.") if name == "joint ranges" else ""
+            text = ("One histogram per joint: bar height = the share of the working IK solutions at that angle (10° bins); "
+                    "the grey band is the joint's limits. Follows the IK configurations filter.") if name == "joint ranges" else ""
         elif jm.mode == "sweep":
             from .plots import SWEEP_PRECEDENCE
 
@@ -655,8 +1087,9 @@ class ReachViewer:
         if self.reach is not None:
             r = self.reach
             lv = r.levels()
-            parts = [f"{LEVEL_NAMES[k]} {int((lv >= k).sum())}" for k in ((3, 4, 5, 6) if r.task != "position" else (3,))]
-            lines.append(f"{r.n_positions:,} grid points × {r.n_orientations} orientations × {r.n_branches} IK branches → {len(r.sol_index):,} valid solutions in {_dur(r.seconds)}")
+            parts = [f"{LEVEL_NAMES[k]} {int((lv >= k).sum()):,}" for k in ((3, 4, 5, 6) if r.task != "position" else (3,))]
+            lines.append(f"{r.n_positions:,} grid points × {r.n_orientations} orientations × up to {r.n_branches} IK solutions → "
+                         f"{len(r.sol_index):,} working IK solutions in {_dur(r.seconds)}")
             lines.append("points: " + " · ".join(parts))
         else:
             lines.append("Workspace is a curve: shown as the FK cloud; IK grid skipped.")
@@ -664,32 +1097,50 @@ class ReachViewer:
 
     # ================================================================== workspace layer
     def _current_layer(self):
-        return self.layer_reach if self.layer_reach is not None else self.reach
+        """The map on screen: the full map or an Ask-here layer, filtered to the allowed IK configurations."""
+        return self._filtered(self.layer_reach if self.layer_reach is not None else self.reach)
 
     def _redraw_workspace(self):
         reach = self._current_layer()
         if reach is None:
             self.g_legend.content = self._code_legend(np.unique(self.result.cloud_code))
             return
-        kind = self._show_keys.get(self.g_show.value, "reachable")
         cut = None
         if self.g_cut.value != "none":
             axis = "xyz".index(self.g_cut.value)
             # WHY keep the far half: the cut face then faces the camera, so you look INTO the map
             cut = (axis, float(self.g_cut_at.value), bool(self.home_direction[axis] >= 0))
-        settings = dict(kind=kind, color_by=self.g_color.value, voxel_scale=float(self.g_voxel.value), blob=self.g_blob.value,
-                        cut=cut, dim=self.sel_point is not None or self.arm_q is not None)
+        # WHY hidden while edited: an edited settings card no longer describes the map on screen
+        stale = getattr(self, "_settings_dirty", False) and self.layer_reach is None
+        settings = dict(visible=not stale, kind="all", color_by=self.g_color.value, voxel_scale=float(self.g_voxel.value), blob=self.g_blob.value,
+                        cut=cut, dim=self.sel_point is not None or self.arm_q is not None, colormap=self.g_cmap.value,
+                        reverse=bool(self.g_reverse.value), hidden=set(self._hidden))
         with self.lock:
             # the overlay is the same seam a host scene uses (overlay.add_reach_map); one per layer
             if self.overlay is None or self.overlay.reach is not reach:
                 if self.overlay is not None:
                     self.overlay.remove()
                 self.overlay = ReachOverlay(self.server, reach, parent_frame="/workspace", step=self._layer_step(),
-                                            on_select=self._select, **settings)
+                                            on_select=self._select, **{k: v for k, v in settings.items() if k != "visible"})
+                if stale:
+                    self.overlay.visible = False
             else:
                 self.overlay.update(**settings)
-        self.visible_index = self.overlay.shown_index
-        self.g_legend.content = f"<small>{len(self.visible_index):,} of {reach.n_positions:,} grid points · coloured by {self.g_color.value}: {self.overlay.legend}</small>"
+        self.visible_index = self.overlay.shown_index if not stale else np.zeros(0, int)
+        mode = color_mode(reach, self.g_color.value)
+        rows = [r for r in self.overlay.bins if r["count"] > 0 or r["key"] == "0"]
+        self._sync_legend(rows, mode, reach.n_positions)
+        note = ""
+        if mode == "workspace" and reach.task != "position":
+            note = "<br>" + "<br>".join(f"<b>{LEVEL_NAMES[k]}</b>: {LEVEL_MEANINGS[k]}" for k in (3, 4, 5, 6)) + \
+                   "<br>Nested: each includes the next; a point is counted at the highest it reaches."
+        elif mode == "fraction of orientations":
+            note = f"<br>Colour = the share of the {reach.n_orientations} orientations reachable there."
+        self.g_legend_note.content = f"<small>{note[4:]}</small>" if note else ""
+        filt = "" if self._allowed() is None else " · IK configurations filtered"
+        shown = "map hidden: settings edited" if stale else f"{len(self.visible_index):,} of {reach.n_positions:,} grid points shown"
+        blob = self.overlay.legend.split("<br>", 1)[1] if "<br>blob" in self.overlay.legend else ""
+        self.g_legend.content = f"<small>{shown}{filt}" + (f" · {blob}" if blob else "") + "</small>"
 
     def _layer_step(self) -> float:
         reach = self._current_layer()
@@ -748,6 +1199,7 @@ class ReachViewer:
             from viser_3d_viewer.shim import send_javascript
 
             send_javascript(self.server, ESCAPE_JS)
+            send_javascript(self.server, DECORATE_JS)
         except Exception:  # plain viser: the Clear button and empty clicks still work
             pass
         try:
@@ -792,15 +1244,20 @@ class ReachViewer:
         if not was_selected:
             self._redraw_workspace()
         sols = reach.solutions(p)
+        configs = reach.solution_configs(p)
+        configs = [None] * len(sols) if configs is None else [int(c) for c in configs]
         tilt = reach.orientations.tilt
-        sols.sort(key=lambda s: (float(tilt[s[0]]), s[0], s[1]))  # straight-down approach first
-        self.sel_solutions = sols
+        order = sorted(range(len(sols)), key=lambda i: (float(tilt[sols[i][0]]), sols[i][0], sols[i][1]))  # straight down first
+        self.sel_solutions = [sols[i] for i in order]
+        self.sel_configs = [configs[i] for i in order]
+        sols = self.sel_solutions
         lv = int(reach.levels()[p])
         x, y, z = reach.positions[p]
         self.g_sel_md.content = (
-            f"**({x:+.3f}, {y:+.3f}, {z:+.3f}) m** · {LEVEL_NAMES.get(lv, lv)} ({lv} DOF)\n\n"
-            f"{len(sols)} working (orientation, IK branch) pairs · "
+            f"**({x:+.3f}, {y:+.3f}, {z:+.3f}) m** · {LEVEL_NAMES.get(lv, lv)}\n\n"
+            f"{len(sols)} working IK solutions (over every orientation) · "
             f"{int(reach.valid_mask[p].sum())}/{reach.n_orientations} orientations"
+            + ("" if self._allowed() is None else " · IK configurations filtered")
         )
         self.g_res_md.content = self._resolution_md(reach)
         n = max(1, len(sols))
@@ -839,8 +1296,10 @@ class ReachViewer:
         else:
             self.target.visible = False
         tilt, roll = np.rad2deg(reach.orientations.tilt[o]), np.rad2deg(reach.orientations.roll[o])
-        orient = "" if reach.task == "position" else f"orientation #{o + 1} of {reach.n_orientations}: tilt {tilt:.0f}° from approach, roll {roll:.0f}° · "
-        self.g_sol_md.content = f"**{k + 1} / {len(self.sel_solutions)}** · {orient}IK branch {b}\n\n{_deg_labelled(q)}"
+        orient = "" if reach.task == "position" else f"orientation #{o + 1} of {reach.n_orientations}: tilt {tilt:.0f}° from approach, roll {roll:.0f}°"
+        cfg = self.sel_configs[k] if k < len(getattr(self, "sel_configs", [])) else None
+        name = f"IK configuration: {reach.configurations.name(cfg)}" if cfg is not None and reach.configurations is not None else f"IK solution slot {b + 1}"
+        self.g_sol_md.content = f"**{k + 1} / {len(self.sel_solutions)}** · {orient}\n\n{name}\n\n{_deg_labelled(q)}"
         for h, v in zip(self.g_jog, np.rad2deg(q)):
             h.value = float(np.clip(v, h.min, h.max))
 
@@ -869,7 +1328,7 @@ class ReachViewer:
         tau = self.arm.gravity_torque(q[None])
         tau_txt = "" if tau is None else f"\n\ngravity torque [{', '.join(f'{t:+.2f}' for t in tau[0])}] N·m"
         touching = ""
-        if code == Code.COLLISION:
+        if is_collision(code):
             parts = sorted(self.contact)
             touching = "\n\n<small>in contact (red): " + (", ".join(parts) if parts else "the red skeleton points") + "</small>"
         self.g_jog_md.content = (
@@ -880,37 +1339,89 @@ class ReachViewer:
 
     # ================================================================== ask here
     def _build_tools(self):
+        """Ask here (Zach's pick C2, 2026-11-23): the box moves AND tilts in the 3-D view with viser's
+        transform gizmo ("check out viser it already has like the built in thing ... you can drag XYZ but
+        also tilt!!"); the same frame and the angle set are typed fields, with the Python line that runs."""
         g, s = self.server.gui, self.server.scene
         size0 = max(self.step * 4, self.extent * 0.25)
         start = self.center + np.array([self.extent * 0.25, 0.0, 0.0])
         if self.planar:
             start[1] = 0.0
+        res = self.reach.orientations.resolution() if self.reach.task != "position" else {}
         with self._folder("Ask here", expand_by_default=True):
-            g.add_markdown("<small>Drag the gizmo. **Compute box** samples it finer; **Drop POI** checks every orientation at its centre.</small>")
+            g.add_markdown("<small>Drag the gizmo's arrows to move the box and its rings to tilt it. "
+                           "**Compute box** samples it finer; **Drop POI** checks every orientation at its centre.</small>")
             self.g_box_on = g.add_checkbox("Show box", initial_value=False)
+            self.g_box_center = g.add_vector3("Box centre (m)", initial_value=tuple(float(v) for v in start), step=0.01)
+            self.g_box_rpy = g.add_vector3("Roll / pitch / yaw (°)", initial_value=(0.0, 0.0, 0.0), step=1.0)
             self.g_box_size = g.add_vector3("Box size (m)", initial_value=tuple(float(size0) for _ in range(3)) if not self.planar else (float(size0), 0.0, float(size0)), step=0.01)
             self.g_box_step = g.add_number("Box step (m)", initial_value=round(max(self.step / 2, 0.005), 3), step=0.005, min=0.002)
-            self.g_approach = g.add_dropdown("Approach (4-DOF / hemisphere)", tuple(APPROACHES), initial_value="down (-z)")
+            oriented = self.reach.task != "position"
+            self.g_ask_max = g.add_number("Angles up to (°)", initial_value=float(res.get("tilt_max_deg", 180.0)), min=0.0, max=180.0, step=5.0,
+                                          visible=oriented, hint="Tilt from the approach (the box's −Z): 0 = straight down only")
+            self.g_ask_tilt = g.add_number("Tilt step (°)", initial_value=float(res.get("tilt_step_deg") or 45.0), min=5.0, max=180.0, step=5.0,
+                                           visible=oriented)
+            self.g_ask_roll = g.add_number("Roll step (°)", initial_value=float(res.get("roll_step_deg") or 60.0), min=5.0, max=360.0, step=5.0,
+                                           visible=oriented)
             self.g_ask_res_md = g.add_markdown("")
+            self.g_ask_code = g.add_markdown("")
             btns = g.add_button_group("Run", ("Compute box", "Drop POI", "Back to full map"))
             self.g_tool_md = g.add_markdown("")
-        self.g_approach.on_update(lambda _e: self._ask_resolution())
-        self._ask_resolution()
-        self.gizmo = s.add_transform_controls("/ask/gizmo", scale=self.extent * 0.25, position=tuple(start), disable_rotations=True, visible=False)
+        self.gizmo = s.add_transform_controls("/ask/gizmo", scale=self.extent * 0.25, position=tuple(start), visible=False)
         self.box_handle = s.add_box("/ask/gizmo/box", color=(245, 159, 0), dimensions=tuple(self.g_box_size.value), wireframe=True, visible=False)
+        self.box_up = s.add_line_segments("/ask/gizmo/up", np.array([[[0, 0, 0], [0, 0, 1]]], np.float32) * float(size0) * 0.8,
+                                          np.array((34, 139, 230), np.uint8), thickness=self.extent * 0.004, visible=False)
+        self._box_quiet = False
+        self.gizmo.on_update(lambda _e: self._gizmo_moved())
+        for h in (self.g_box_center, self.g_box_rpy):
+            h.on_update(lambda _e: self._box_fields_changed())
+        for h in (self.g_box_step, self.g_ask_max, self.g_ask_tilt, self.g_ask_roll):
+            h.on_update(lambda _e: self._ask_resolution())
         self.g_box_on.on_update(lambda _e: self._toggle_box())
-        self.g_box_size.on_update(lambda _e: setattr(self.box_handle, "dimensions", tuple(max(1e-4, v) for v in self.g_box_size.value)))
+        self.g_box_size.on_update(lambda _e: self._box_size_changed())
         btns.on_click(lambda e: self._run_tool(e.target.value))
+        self._ask_resolution()
+
+    def _box_size_changed(self):
+        size = tuple(max(1e-4, v) for v in self.g_box_size.value)
+        self.box_handle.dimensions = size
+        self._ask_resolution()
+
+    def _gizmo_moved(self):
+        """The gizmo was dragged: write its frame into the fields (without echoing back)."""
+        if self._box_quiet:
+            return
+        self._box_quiet = True
+        try:
+            self.g_box_center.value = tuple(round(float(v), 4) for v in self.gizmo.position)
+            self.g_box_rpy.value = tuple(round(float(v), 2) for v in matrix_rpy(wxyz_matrix(self.gizmo.wxyz)))
+        finally:
+            self._box_quiet = False
+        self._ask_resolution()
+
+    def _box_fields_changed(self):
+        """A frame was typed: move the gizmo (and the box under it) there."""
+        if self._box_quiet:
+            return
+        self._box_quiet = True
+        try:
+            self.gizmo.position = tuple(float(v) for v in self.g_box_center.value)
+            self.gizmo.wxyz = tuple(float(v) for v in _wxyz(rpy_matrix(self.g_box_rpy.value)))
+        finally:
+            self._box_quiet = False
+        self._ask_resolution()
 
     def _toggle_box(self):
         on = self.g_box_on.value
         self.gizmo.visible = on
         self.box_handle.visible = on
+        self.box_up.visible = on
 
     def _orientations(self):
         if self.reach.task == "position":
             return None
-        return OrientationSet.sample(approach=APPROACHES[self.g_approach.value])
+        return box_orientations(rpy_matrix(self.g_box_rpy.value), float(self.g_ask_max.value), float(self.g_ask_tilt.value),
+                                float(self.g_ask_roll.value))
 
     def _run_tool(self, which: str):
         if which == "Back to full map":
@@ -922,13 +1433,13 @@ class ReachViewer:
         self.gizmo.visible = True
         self.g_box_on.value = True
         self._toggle_box()
-        c = np.asarray(self.gizmo.position, float)
+        c = np.asarray(self.g_box_center.value, float)
         cfg = self.result.config
         t0 = time.perf_counter()
         if which == "Compute box":
             size = np.maximum(np.asarray(self.g_box_size.value, float), 0.0)
             step = float(self.g_box_step.value)
-            positions = Box(tuple(c), tuple(size)).grid(step)
+            positions = box_positions(c, size, self.g_box_rpy.value, step)
             if len(positions) > 60_000:
                 self.g_tool_md.content = f"**{len(positions):,} points is too many** — raise the step."
                 return
@@ -936,7 +1447,7 @@ class ReachViewer:
             rm = reach_map(self.arm, positions, self._orientations(), floor_z=cfg.get("floor_z"), singular_tol=cfg.get("singular_tol", 0.0), w_ref=cfg.get("w_ref"))
             rm.meta["step"] = step
             self.layer_reach = rm
-            lv = rm.levels()
+            lv = self._filtered(rm).levels()
             kinds = (3, 4, 5, 6) if rm.task != "position" else (3,)
             pct = " · ".join(f"{LEVEL_NAMES[k]} {100 * np.mean(lv >= k):.0f}%" for k in kinds)
             self.g_tool_md.content = f"**Box: {len(positions):,} points** in {_dur(time.perf_counter() - t0)}\n\n{pct} of the box"
@@ -947,11 +1458,11 @@ class ReachViewer:
             rm.meta["step"] = self.step
             self.layer_reach = rm
             self.pois.append(c)
-            lv = int(rm.levels()[0])
+            lv = int(self._filtered(rm).levels()[0])
             if rm.task != "position":
                 # a hedgehog: one spike per sampled approach direction, green where some roll works
                 dirs = rm.orientations.R[:, :, 2]
-                ok = rm.valid_mask[0]
+                ok = self._filtered(rm).valid_mask[0]
                 L = self.extent * 0.12
                 segs = np.stack([np.broadcast_to(c, dirs.shape), c - dirs * L], axis=1)
                 cols = np.where(ok[:, None], np.array(CODE_COLORS[Code.OK]), np.array((200, 200, 200)))
@@ -959,7 +1470,7 @@ class ReachViewer:
                 self.server.scene.add_line_segments("/ask/poi_axes", segs.astype(np.float32), cols.astype(np.uint8), thickness=self.extent * 0.004)
             self.g_tool_md.content = (
                 f"**POI ({c[0]:+.3f}, {c[1]:+.3f}, {c[2]:+.3f})** · {LEVEL_NAMES.get(lv, lv)}\n\n"
-                f"{int(rm.valid_mask[0].sum())}/{rm.n_orientations} orientations · {len(rm.sol_index)} solutions"
+                f"{int(self._filtered(rm).valid_mask[0].sum())}/{rm.n_orientations} orientations · {len(self._filtered(rm).sol_index)} IK solutions"
                 + ("\n\n<small>spikes point back along each approach: green = reachable</small>" if rm.task != "position" else "")
             )
             self._redraw_workspace()
