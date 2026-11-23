@@ -50,7 +50,7 @@ footer{color:var(--muted);font-size:12.5px;margin-top:40px}
 </style></head><body><main>
 <h1>robot_reach</h1>
 <p class="purpose">Where can this arm go, and how well? Kinematics in (FK and IK, or a URDF / RobotDescription), workspace out: Cartesian and joint space, for any number of joints.</p>
-<p class="sub">BAM Reach v2 · numpy + robot_msgs at runtime, viser to look · 58ba1e7 · built 2026-11-23 · <a href="https://github.com/zacharyyamaoka/robot_reach">source</a></p>
+<p class="sub">BAM Reach v2 · numpy + robot_msgs at runtime, viser to look · 205733d · built 2026-11-23 · <a href="https://github.com/zacharyyamaoka/robot_reach">source</a></p>
 <nav class="toc"><a href="#how">How it works</a><a href="#viewer">The viewer</a><a href="#dof">Any DOF</a><a href="#cases">Use cases</a><a href="#api">API</a><a href="#msgs">robot_msgs</a><a href="#example">Worked example</a><a href="#next">Next</a></nav>
 <div class="answer"><b>Give it a robot's kinematics, get its workspace.</b> FK and IK as two pure functions, or a URDF / RobotDescription. For any DOF, from a 1-joint pendulum to a 6-DOF UR5e, it maps where the tool can go (and with how much wrist freedom), which joint postures work, and why the rest fail. Every IK branch is kept and re-checked. It computes once and saves plain arrays; viser shows them and recomputes live from Python as you click. UR5e: 905,388 target poses × 8 branches → 1,006,878 verified solutions.</div>
 <div class="quick prose">
