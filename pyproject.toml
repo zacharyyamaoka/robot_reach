@@ -5,22 +5,43 @@ build-backend = "hatchling.build"
 [project]
 name = "robot-reach"
 version = "0.1.0"
-description = "BAM Reach v2: reachability of any arm in joint space and Cartesian space, from FK and IK passed in as pure functions; computed once, viewed in viser."
+description = "Reachability of any robot arm in joint space and Cartesian space, from FK and IK passed in as pure functions; computed once, viewed in viser."
 readme = "README.md"
 authors = [{ name = "Zach Yamaoka" }]
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+keywords = ["robotics", "reachability", "workspace", "inverse-kinematics", "robot-arm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
 # WHY numpy + robot_msgs only (Zach's dependency-free runtime cores; robot_msgs is the shared
 # vocabulary every new package depends on): the analysis must import with nothing heavier.
 # The viewer and the plots are extras.
-dependencies = ["numpy>=1.26", "robot-msgs>=0.3.0"]
+# robot-msgs 0.3.1: NamedPose.description (goals.py, rest.py).
+dependencies = ["numpy>=1.26", "robot-msgs>=0.3.1"]
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.8"]
-# WHY viser pinned through viser-3d-viewer: the house viewer pins viser==1.1.1 (client contract);
-# taking it gives the ViewCube, no logo and asserted ports for free.
-viz = ["viser==1.1.1", "viser-3d-viewer", "matplotlib>=3.8"]
-test = ["pytest>=8", "matplotlib>=3.8", "viser==1.1.1", "viser-3d-viewer"]
+# WHY viser pinned to 1.1.1: the house viewer (viser-3d-viewer) pins it (client contract).
+# viser-3d-viewer itself is not on PyPI, so it is a dev-only group below: viewer.py and rest_viewer.py
+# import it lazily and fall back to plain viser without the house chrome.
+viz = ["viser==1.1.1", "matplotlib>=3.8", "trimesh"]
+test = ["pytest>=8", "matplotlib>=3.8", "viser==1.1.1"]
+
+[project.urls]
+Homepage = "https://github.com/zacharyyamaoka/robot_reach"
+Repository = "https://github.com/zacharyyamaoka/robot_reach"
+
+[dependency-groups]
+# Local dev only (uv sync installs it by default): the house viewer chrome (ViewCube, no logo, asserted ports).
+dev = ["viser-3d-viewer"]
 
 [tool.uv.sources]
 robot-msgs = { path = "/home/bam/robot_msgs", editable = true }
