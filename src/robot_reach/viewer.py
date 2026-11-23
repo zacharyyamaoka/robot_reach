@@ -181,6 +181,19 @@ def model_styles(meshes, show: str, contact: set[str]) -> list[tuple[bool, tuple
     return out
 
 
+def mesh_opacity(mesh, show: str, touching: bool, slider: float) -> float | None:
+    """The opacity to give a robot mesh; None = opaque.
+
+    WHY None at full opacity, not 1.0: viser renders any mesh with an opacity set in the transparent
+    pass, after the (see-through) voxels, which have already written depth, so every part inside the
+    workspace cloud vanished (seen 2026-11-23: only the UR5e's wrist, outside the cloud, showed).
+    WHY a collision mesh is see-through only under "both": there it wraps the visual mesh it would hide."""
+    value = float(slider)
+    if mesh_role(mesh) == "collision" and show == "both" and not touching:
+        value *= 0.55
+    return None if value >= 0.999 else value
+
+
 def collision_note(arm, floor_z) -> str:
     """What the collision check actually uses, in words (it may not be the drawn meshes)."""
     parts = []
@@ -377,7 +390,10 @@ class ReachViewer:
                 continue
             color = m.color or ((200, 203, 208) if mesh_role(m) != "collision" else COLLISION_MESH_RGB)
             h = s.add_mesh_simple(f"/arm/mesh/{i}", np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.uint32),
-                                  color=tuple(int(c) for c in color), visible=False)
+                                  color=tuple(int(c) for c in color), visible=False,
+                                  # WHY double-sided: CAD exports often wind faces inside out (UR's .dae
+                                  # link tubes do), and a one-sided render culls those parts away.
+                                  side="double")
             self.mesh_handles.append((i, h))
 
     def _model_show(self) -> str:
@@ -402,8 +418,7 @@ class ReachViewer:
             h.wxyz = tuple(float(v) for v in _wxyz(T[i, :3, :3]))
             base = m.color or ((200, 203, 208) if mesh_role(m) != "collision" else COLLISION_MESH_RGB)
             h.color = tuple(int(c) for c in (color or base))
-            # WHY collision meshes stay see-through: they wrap the visual ones, so opaque they hide them
-            h.opacity = opacity * (0.55 if mesh_role(m) == "collision" else 1.0)
+            h.opacity = mesh_opacity(m, self._model_show(), m.part in self.contact, opacity)
             h.visible = visible
 
     # ================================================================== GUI

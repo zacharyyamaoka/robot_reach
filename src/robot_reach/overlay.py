@@ -249,10 +249,12 @@ class ReachOverlay:
         self._full_index, self._empty_index = idx[~empty], idx[empty]
         s = self.server.scene
         size = self.step * self._voxel_scale
-        # WHY dim on selection: the arm sits inside the workspace, so opaque voxels hide it.
+        # WHY dim on selection: the arm sits inside the workspace, so opaque voxels hide it. WHY 0.08,
+        # not 0.16: a link deep inside the map sits behind ~6 voxel layers, and at 0.16 each those wash
+        # a dark housing out to near white (seen 2026-11-23 on the URDF UR5e's base and upper arm).
         for name, sub, scale, opacity, handler in (
-            ("voxels", ~empty, 1.0, 0.16 if self._dim else None, self._clicked),
-            ("empty_voxels", empty, 0.35, 0.12 if self._dim else 0.45, self._clicked_empty),
+            ("voxels", ~empty, 1.0, 0.08 if self._dim else None, self._clicked),
+            ("empty_voxels", empty, 0.35, 0.05 if self._dim else 0.45, self._clicked_empty),
         ):
             if sub.any():
                 n = int(sub.sum())

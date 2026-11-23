@@ -227,6 +227,19 @@ def test_model_shows_styles_and_contacts(boxed):
     assert collision_note(rr_arm(), None) == "No collision is checked for this arm."
 
 
+def test_mesh_opacity_is_opaque_at_full_and_collision_see_through_only_under_both(boxed):
+    from robot_reach.viewer import mesh_opacity
+
+    arm = arm_from_urdf(boxed, "tool", meshes=True)
+    visual = next(m for m in arm.meshes if m.draw and not m.measure)
+    collision = next(m for m in arm.meshes if m.measure and not m.draw)
+    assert mesh_opacity(visual, "visual", False, 1.0) is None
+    assert mesh_opacity(visual, "visual", False, 0.4) == 0.4
+    assert mesh_opacity(collision, "collision", False, 1.0) is None
+    assert np.isclose(mesh_opacity(collision, "both", False, 1.0), 0.55)
+    assert mesh_opacity(collision, "both", True, 1.0) is None  # a part in contact stays solid red
+
+
 def test_ray_helpers():
     from robot_reach.viewer import ray_hits_boxes, ray_near_points
 
@@ -310,6 +323,7 @@ def test_viewer_robot_model_controls(viewer):
     assert "collision" in v.g_jog_md.content and "in contact" in v.g_jog_md.content and "tool" in v.contact
     handles = {v.arm.meshes[i].part + ("/c" if not v.arm.meshes[i].draw else ""): h for i, h in v.mesh_handles}
     assert handles["upper"].visible and not handles["upper/c"].visible
+    assert handles["upper"].opacity is None  # opaque: drawn before the see-through voxels
     v.g_opacity.value = 0.4
     v._pose_meshes()
     assert np.isclose(handles["upper"].opacity, 0.4)
