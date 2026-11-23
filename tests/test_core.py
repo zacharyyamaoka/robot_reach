@@ -121,7 +121,7 @@ def test_save_load_round_trip_rebuilds_the_arm(tmp_path):
     assert np.allclose(back.reach.sol_q, res.reach.sol_q)
     assert back.summary()["reach"] == res.summary()["reach"]
     doc = json.loads((tmp_path / "rr" / "result.json").read_text())
-    assert doc["schema"] == "robot_reach.result.v1"
+    assert doc["schema"] == "robot_reach.result.v2"
 
 
 def test_v1_compatible_fields():

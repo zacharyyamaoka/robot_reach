@@ -1,6 +1,6 @@
 """Command line.
 
-    python -m robot_reach examples            # compute (or reuse) all five examples, view them
+    python -m robot_reach examples            # compute (or reuse) all examples (five + two URDF arms), view them
     python -m robot_reach run ur5e rr         # compute + save + PNG figures
     python -m robot_reach view out/ur5e       # view saved results
     python -m robot_reach rest shoulder3      # the rest-pose explorer (spec: an example, file.py:func or module:func)
@@ -19,21 +19,34 @@ DEFAULT_OUT = Path(__file__).resolve().parents[2] / "out"
 
 def _run(names, out: Path, fresh: bool):
     from . import analyze, load
-    from .examples import EXAMPLES
+    from .analyze import RESULT_SCHEMA
+    from .examples import EXAMPLES, analyze_urdf_example, urdf_examples
 
     results = {}
+    urdf = urdf_examples(out)
     for name in names:
-        folder = out / name
+        if name in urdf["missing"]:
+            print(f"{name}: skipped, {urdf['missing'][name]}", flush=True)
+            continue
+        folder = out / (urdf["found"][name][2] if name in urdf["found"] else name)
         if not fresh and (folder / "result.json").exists():
             try:
+                schema = json.loads((folder / "result.json").read_text()).get("schema")
+                if schema != RESULT_SCHEMA:  # an older layout still loads, but lacks what is new: recompute
+                    raise ValueError(f"saved as {schema}, now {RESULT_SCHEMA}")
                 results[name] = load(folder)
                 print(f"{name}: reused {folder}", flush=True)
                 continue
             except Exception as exc:  # stale schema -> recompute
                 print(f"{name}: recomputing ({exc})", flush=True)
-        factory, kwargs = EXAMPLES[name]
         t = time.perf_counter()
-        res = analyze(factory(), **kwargs)
+        if name in urdf["found"]:
+            path, tip, _ = urdf["found"][name]
+            print(f"{name}: computing from {path} (numeric IK, ~1-2 min) ...", flush=True)
+            res = analyze_urdf_example(path, tip, name)
+        else:
+            factory, kwargs = EXAMPLES[name]
+            res = analyze(factory(), **kwargs)
         res.save(folder)
         try:
             from .plots import save_figures
@@ -88,6 +101,9 @@ def rest_main(argv) -> int:
     return cli(lambda: with_pose_files(factory(), a.poses, a.candidates), rest)
 
 
+URDF_EXAMPLE_NAMES = ("ur5e (URDF)", "ur5e + 2F-85 (URDF)")
+
+
 def main(argv=None) -> int:
     from .examples import EXAMPLES
 
@@ -100,7 +116,7 @@ def main(argv=None) -> int:
     for cmd in ("run", "examples"):
         p = sub.add_parser(cmd)
         if cmd == "run":
-            p.add_argument("arms", nargs="+", choices=[*EXAMPLES, "all"])
+            p.add_argument("arms", nargs="+", choices=[*EXAMPLES, *URDF_EXAMPLE_NAMES, "all"])
         p.add_argument("--out", type=Path, default=DEFAULT_OUT)
         p.add_argument("--fresh", action="store_true", help="recompute even if a saved result exists")
         p.add_argument("--port", type=int, default=0)
@@ -143,7 +159,10 @@ def main(argv=None) -> int:
         if not a.no_view:
             _open(ReachViewer, results, a)
         return 0
-    names = list(EXAMPLES) if a.cmd == "examples" or "all" in a.arms else a.arms
+    if a.cmd == "examples":
+        names = [*EXAMPLES, *URDF_EXAMPLE_NAMES]
+    else:
+        names = [*EXAMPLES, *URDF_EXAMPLE_NAMES] if "all" in a.arms else a.arms
     results = _run(names, a.out, a.fresh)
     if not a.no_view:
         _open(ReachViewer, results, a)

@@ -417,15 +417,24 @@ def test_analytic_ik_can_be_passed_in():
     assert arm.ik is ik
 
 
-def test_urdf_module_imports_only_stdlib_numpy_and_robot_reach():
-    source = (Path(rr.__file__).parent / "urdf.py").read_text()
+def _import_roots(nodes):
     roots = set()
-    for node in ast.walk(ast.parse(source)):
+    for node in nodes:
         if isinstance(node, ast.Import):
             roots |= {alias.name.split(".")[0] for alias in node.names}
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             roots.add(node.module.split(".")[0])
-    assert roots <= {"__future__", "collections", "dataclasses", "pathlib", "typing", "xml", "math", "numpy"}, roots
+    return roots
+
+
+def test_urdf_module_imports_only_stdlib_numpy_and_robot_reach():
+    tree = ast.parse((Path(rr.__file__).parent / "urdf.py").read_text())
+    stdlib_numpy = {"__future__", "collections", "dataclasses", "pathlib", "typing", "xml", "math", "numpy"}
+    top = _import_roots(tree.body)
+    assert top <= stdlib_numpy, top
+    # trimesh (the viz extra) only inside a function, imported when meshes=True is asked for
+    lazy = _import_roots(ast.walk(tree)) - top
+    assert lazy <= {"trimesh"}, lazy
 
 
 def test_analyze_chains_gives_one_result_per_chain_and_the_cli_runs(tmp_path):

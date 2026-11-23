@@ -23,7 +23,10 @@ from .orientations import OrientationSet
 from .reach import ReachMap, reach_map
 from .sampling import Box, fk_cloud, sample_joints
 
-RESULT_SCHEMA = "robot_reach.result.v1"
+RESULT_SCHEMA = "robot_reach.result.v2"
+# v2 (2026-11-23): a sweep also saves `uniform` (every posture had the cell's code), the ranges the
+# other joints were sampled over and the samples per cell. v1 still loads; those fields read as unknown.
+READABLE_SCHEMAS = ("robot_reach.result.v1", RESULT_SCHEMA)
 
 
 @dataclass(eq=False)
@@ -86,6 +89,10 @@ class ReachResult:
                 jm[f"m{i}_torque"] = m.torque
             if m.manipulability is not None:
                 jm[f"m{i}_manip"] = m.manipulability
+            if m.uniform is not None:
+                jm[f"m{i}_uniform"] = m.uniform
+            if m.other_ranges is not None:
+                jm[f"m{i}_ranges"] = m.other_ranges
         r = self.ranges
         jm["ranges_limits"] = r.limits
         if r.used is not None:
@@ -95,7 +102,7 @@ class ReachResult:
             "schema": RESULT_SCHEMA,
             "arm": self.arm_info,
             "config": self.config,
-            "joint_maps": [{"axes": list(m.axes), "names": list(m.names), "mode": m.mode} for m in self.joint_maps],
+            "joint_maps": [{"axes": list(m.axes), "names": list(m.names), "mode": m.mode, "n_sweep": m.n_sweep} for m in self.joint_maps],
             "summary": self.summary(),
         }
         (folder / "result.json").write_text(json.dumps(doc, indent=2, default=_json_default))
@@ -112,8 +119,8 @@ class ReachResult:
 def load(folder: str | Path, rebuild_arm: bool = True) -> ReachResult:
     folder = Path(folder)
     doc = json.loads((folder / "result.json").read_text())
-    if doc.get("schema") != RESULT_SCHEMA:
-        raise ValueError(f"{folder}: schema {doc.get('schema')!r}, expected {RESULT_SCHEMA!r}")
+    if doc.get("schema") not in READABLE_SCHEMAS:
+        raise ValueError(f"{folder}: schema {doc.get('schema')!r}, expected one of {READABLE_SCHEMAS}")
     reach_path = folder / "reach.reach.npz"
     reach = ReachMap.load(reach_path) if reach_path.exists() else None
     with np.load(folder / "cloud.npz", allow_pickle=False) as z:
@@ -134,6 +141,9 @@ def load(folder: str | Path, rebuild_arm: bool = True) -> ReachResult:
                     q0=z[f"m{i}_q0"],
                     torque=z[f"m{i}_torque"] if f"m{i}_torque" in z else None,
                     manipulability=z[f"m{i}_manip"] if f"m{i}_manip" in z else None,
+                    uniform=z[f"m{i}_uniform"] if f"m{i}_uniform" in z else None,
+                    n_sweep=int(spec.get("n_sweep", 0)),
+                    other_ranges=z[f"m{i}_ranges"] if f"m{i}_ranges" in z else None,
                 )
             )
         ranges = JointRanges(

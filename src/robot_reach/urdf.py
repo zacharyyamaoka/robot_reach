@@ -16,7 +16,15 @@
 
 WHY no URDF library (urdfpy, yourdfpy, Pinocchio): robot_reach's runtime dependencies are numpy +
 robot_msgs (Zach's dependency-free runtime cores), and a joint tree is a page of `xml.etree`.
-Visuals, collisions and inertials are not read; xacro must be expanded first.
+Inertials are not read; xacro must be expanded first.
+
+**Meshes** (``arm_from_urdf(..., meshes=True)``): every link's ``<visual>`` and ``<collision>``
+geometry becomes an `ArmMesh`, posed by the arm's ``mesh_poses`` — links off the chain (a gripper's
+fingers) ride along at their joints' zero (clipped into the limits). Visuals are drawn, collisions
+measured (`Arm.surface`). Mesh files are read with trimesh (the ``viz`` extra), imported only here;
+``package://pkg/...`` resolves under ``package_dirs``, the URDF's folder, its ``assets/`` and its
+parents. A visual that cannot be read (a ``.dae`` needs pycollada) is replaced by its link's collision
+mesh, and ``arm.meta["mesh_note"]`` says so.
 """
 
 from __future__ import annotations
@@ -118,11 +126,60 @@ def _joint(element: ET.Element) -> UrdfJoint:
     return UrdfJoint(name, kind, parent.get("link"), child.get("link"), _origin(element), axis, lower, upper, mimic)
 
 
+@dataclass(frozen=True, eq=False)
+class UrdfGeometry:
+    """One ``<visual>`` or ``<collision>`` of a link: a mesh file or a box / cylinder / sphere."""
+
+    link: str
+    role: str  # "visual" | "collision"
+    origin: np.ndarray  # (4, 4) link frame -> geometry frame
+    shape: str  # "mesh" | "box" | "cylinder" | "sphere"
+    filename: str | None = None
+    scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    size: tuple[float, ...] = ()  # box (x, y, z); cylinder (radius, length); sphere (radius,)
+    color: tuple[int, int, int] | None = None
+
+
+def _geometries(root: ET.Element) -> tuple[UrdfGeometry, ...]:
+    named = {}
+    for material in root.findall("material"):
+        color = material.find("color")
+        if material.get("name") and color is not None and color.get("rgba"):
+            named[material.get("name")] = tuple(int(round(255 * float(v))) for v in color.get("rgba").split()[:3])
+    out = []
+    for link in root.findall("link"):
+        for role in ("visual", "collision"):
+            for element in link.findall(role):
+                geometry = element.find("geometry")
+                if geometry is None or len(geometry) == 0:
+                    continue
+                g = geometry[0]
+                color = None
+                material = element.find("material")
+                if material is not None:
+                    rgba = material.find("color")
+                    if rgba is not None and rgba.get("rgba"):
+                        color = tuple(int(round(255 * float(v))) for v in rgba.get("rgba").split()[:3])
+                    else:
+                        color = named.get(material.get("name"))
+                if g.tag == "mesh":
+                    scale = tuple(_floats(g.get("scale"), 3, 1.0)) if g.get("scale") else (1.0, 1.0, 1.0)
+                    out.append(UrdfGeometry(link.get("name"), role, _origin(element), "mesh", g.get("filename"), scale, color=color))
+                elif g.tag == "box":
+                    out.append(UrdfGeometry(link.get("name"), role, _origin(element), "box", size=tuple(_floats(g.get("size"), 3)), color=color))
+                elif g.tag == "cylinder":
+                    size = (float(g.get("radius", 0.0)), float(g.get("length", 0.0)))
+                    out.append(UrdfGeometry(link.get("name"), role, _origin(element), "cylinder", size=size, color=color))
+                elif g.tag == "sphere":
+                    out.append(UrdfGeometry(link.get("name"), role, _origin(element), "sphere", size=(float(g.get("radius", 0.0)),), color=color))
+    return tuple(out)
+
+
 class UrdfModel:
     """The joint tree of one URDF: links, joints, the root, the leaves, and chains through it."""
 
-    def __init__(self, name: str, links: tuple[str, ...], joints: tuple[UrdfJoint, ...]):
-        self.name, self.links, self.joints = name, links, joints
+    def __init__(self, name: str, links: tuple[str, ...], joints: tuple[UrdfJoint, ...], geometries: tuple[UrdfGeometry, ...] = ()):
+        self.name, self.links, self.joints, self.geometries = name, links, joints, geometries
         self._parent_joint: dict[str, UrdfJoint] = {}
         for joint in joints:
             if joint.child in self._parent_joint:
@@ -152,6 +209,38 @@ class UrdfModel:
             link = joint.parent
         return Chain(self.name, tuple(reversed(path)), base, tip_link, tool_offset)
 
+    def link_poser(self, chain: Chain, links) -> tuple[list[str], Callable[[np.ndarray], np.ndarray]]:
+        """(links it can place, ``poses(q) -> (N, L, 4, 4)``) for any `links` of the tree below the
+        chain's base: a chain link moves with q; a link off the chain hangs from its nearest chain
+        ancestor through joints held at zero (clipped into their limits; a mimic joint at its offset)."""
+        index = {link: i for i, link in enumerate(chain.links)}
+        placed, anchors, constants = [], [], []
+        for link in links:
+            T, cursor = np.eye(4), link
+            while cursor not in index:
+                joint = self._parent_joint.get(cursor)
+                if joint is None:
+                    break
+                value = joint.mimic[2] if joint.mimic else float(np.clip(0.0, joint.lower, joint.upper))
+                motion = np.eye(4)
+                if joint.kind == "prismatic":
+                    motion[:3, 3] = joint.axis * value
+                elif joint.movable:
+                    motion[:3, :3] = _rotations(joint.axis, np.array([value]))[0]
+                T = joint.origin @ motion @ T
+                cursor = joint.parent
+            if cursor in index:
+                placed.append(link)
+                anchors.append(index[cursor])
+                constants.append(T)
+        anchors_arr, constants_arr = np.array(anchors, int), np.array(constants, float).reshape(-1, 4, 4)
+
+        def poses(q: np.ndarray) -> np.ndarray:
+            frames = chain.link_frames(q)  # (N, K, 4, 4)
+            return frames[:, anchors_arr] @ constants_arr[None]
+
+        return placed, poses
+
 
 def parse_urdf(xml: str) -> UrdfModel:
     """URDF XML text -> `UrdfModel`."""
@@ -164,7 +253,7 @@ def parse_urdf(xml: str) -> UrdfModel:
         for link in (joint.parent, joint.child):
             if link not in links:
                 links.append(link)
-    return UrdfModel(root.get("name", "robot"), tuple(links), joints)
+    return UrdfModel(root.get("name", "robot"), tuple(links), joints, _geometries(root))
 
 
 def _read(source) -> tuple[UrdfModel, Path | None]:
@@ -557,6 +646,122 @@ def numeric_ik(
     return ik
 
 
+# --------------------------------------------------------------------------- meshes
+def resolve_mesh(filename: str, base_dir: Path | None, package_dirs=()) -> Path | None:
+    """A URDF mesh reference -> an existing file, or None. ``package://pkg/rest`` is looked up as
+    ``<dir>/pkg/rest`` under `package_dirs`, then the URDF's folder, its ``assets/`` and two parents."""
+    if filename.startswith("file://"):
+        path = Path(filename[len("file://"):])
+        return path if path.exists() else None
+    if filename.startswith("package://"):
+        package, _, rest = filename[len("package://"):].partition("/")
+        roots = [Path(d) for d in package_dirs]
+        if base_dir is not None:
+            roots += [base_dir, base_dir / "assets", base_dir.parent, base_dir.parent.parent]
+        for root in roots:
+            for candidate in (root / package / rest, root / rest if root.name == package else None):
+                if candidate is not None and candidate.exists():
+                    return candidate
+        return None
+    path = Path(filename)
+    if not path.is_absolute() and base_dir is not None:
+        path = base_dir / path
+    return path if path.exists() else None
+
+
+def _mesh_color(mesh) -> tuple[int, int, int] | None:
+    visual = getattr(mesh, "visual", None)
+    material = getattr(visual, "material", None)
+    color = getattr(material, "main_color", None)
+    if color is None and getattr(visual, "kind", None) in ("face", "vertex"):
+        color = np.asarray(visual.face_colors).mean(axis=0) if visual.kind == "face" else np.asarray(visual.vertex_colors).mean(axis=0)
+    return None if color is None else tuple(int(c) for c in np.asarray(color)[:3])
+
+
+def _mesh_arrays(geometry: UrdfGeometry, base_dir: Path | None, package_dirs) -> list[tuple[np.ndarray, np.ndarray, tuple | None]]:
+    """[(vertices (V, 3) in the link frame, faces (F, 3), colour or None)]: one entry per coloured
+    sub-mesh of the file (a UR's .dae carries its grey body and blue caps). Raises with the reason."""
+    import trimesh  # the viz extra: only drawing needs it
+
+    if geometry.shape == "mesh":
+        path = resolve_mesh(geometry.filename, base_dir, package_dirs)
+        if path is None:
+            raise FileNotFoundError(f"{geometry.filename} not found")
+        loaded = trimesh.load(str(path))  # a .dae needs pycollada: ImportError
+        parts = loaded.dump() if isinstance(loaded, trimesh.Scene) else [loaded]
+        out = []
+        for mesh in parts:
+            color = _mesh_color(mesh)
+            mesh = trimesh.Trimesh(np.asarray(mesh.vertices, float) * np.asarray(geometry.scale, float), np.asarray(mesh.faces), process=True)
+            out.append((mesh.vertices, mesh.faces, color))
+    elif geometry.shape == "box":
+        mesh = trimesh.creation.box(extents=geometry.size)
+        out = [(mesh.vertices, mesh.faces, None)]
+    elif geometry.shape == "cylinder":
+        mesh = trimesh.creation.cylinder(radius=geometry.size[0], height=geometry.size[1], sections=24)
+        out = [(mesh.vertices, mesh.faces, None)]
+    else:
+        mesh = trimesh.creation.icosphere(subdivisions=2, radius=geometry.size[0])
+        out = [(mesh.vertices, mesh.faces, None)]
+    R, t = geometry.origin[:3, :3], geometry.origin[:3, 3]
+    return [(np.asarray(v, float) @ R.T + t, np.asarray(f, np.int64), geometry.color or c) for v, f, c in out]
+
+
+def _merge_by_color(parts: list) -> list:
+    """One (vertices, faces, colour) per colour: fewer scene nodes to pose per frame."""
+    groups: dict = {}
+    for v, f, color in parts:
+        groups.setdefault(color, []).append((v, f))
+    out = []
+    for color, items in groups.items():
+        offsets = np.cumsum([0] + [len(v) for v, _ in items[:-1]])
+        out.append((np.concatenate([v for v, _ in items]), np.concatenate([f + o for (_, f), o in zip(items, offsets)]), color))
+    return out
+
+
+def urdf_meshes(model: UrdfModel, chain: Chain, base_dir: Path | None, package_dirs=()) -> tuple[tuple, Callable | None, str]:
+    """(`ArmMesh` parts, ``mesh_poses(q) -> (N, M, 4, 4)``, a note on what could not be read).
+
+    Visuals are drawn (`draw`, not `measure`); collisions are measured, not drawn. A link whose
+    visuals all fail is drawn with its collision geometry instead, and the note names why."""
+    from .arm import ArmMesh
+
+    by_link: dict[str, dict[str, list]] = {}
+    failures = []
+    for geometry in model.geometries:
+        try:
+            parts = _mesh_arrays(geometry, base_dir, package_dirs)
+        except Exception as exc:  # report, never hide: the note lists each failure
+            failures.append(f"{geometry.link} {geometry.role}: {type(exc).__name__}: {exc}")
+            continue
+        by_link.setdefault(geometry.link, {"visual": [], "collision": []})[geometry.role].extend(parts)
+    placed, poser = model.link_poser(chain, list(by_link))
+    meshes, owners = [], []
+    for link in placed:
+        visual, collision = _merge_by_color(by_link[link]["visual"]), by_link[link]["collision"]
+        draw_from_collision = not visual and bool(collision)
+        for v, f, color in visual:
+            meshes.append(ArmMesh(link, v, f, color, draw=True, measure=False))
+            owners.append(link)
+        for v, f, color in collision:
+            meshes.append(ArmMesh(link, v, f, color, draw=draw_from_collision, measure=True))
+            owners.append(link)
+    note = ""
+    if failures:
+        fell_back = sorted({fail.split(" ")[0] for fail in failures if " visual:" in fail} & {m.part for m in meshes if m.draw})
+        note = f"{len(failures)} geometry file(s) unreadable" + (f"; drawn with collision meshes: {', '.join(fell_back)}" if fell_back else "")
+        note += f". First: {failures[0]}"
+    if not meshes:
+        return (), None, note or "no geometry in the URDF"
+    link_index = {link: i for i, link in enumerate(placed)}
+    columns = np.array([link_index[o] for o in owners], int)
+
+    def mesh_poses(q: np.ndarray) -> np.ndarray:
+        return poser(np.atleast_2d(np.asarray(q, float)))[:, columns]
+
+    return tuple(meshes), mesh_poses, note
+
+
 # --------------------------------------------------------------------------- front doors
 def arm_from_urdf(
     urdf: str | Path,
@@ -568,12 +773,15 @@ def arm_from_urdf(
     n_seeds: int = 8,
     name: str | None = None,
     tool_offset=None,
+    meshes: bool = False,
+    package_dirs=(),
 ) -> Arm:
     """An `Arm` for the chain `base_link` (default: the root) -> `tip_link` of a URDF.
 
     `urdf` is a file path or the XML text. `task` defaults from the DOF (`default_task`). `ik`
     replaces the generic `numeric_ik` with an analytic solver in the `Arm` contract. `tool_offset`
-    is a fixed 4x4 appended at the tip (the tool's +Z is the approach axis)."""
+    is a fixed 4x4 appended at the tip (the tool's +Z is the approach axis). `meshes` reads every
+    link's visual and collision geometry (module docstring; needs trimesh) into `Arm.meshes`."""
     model, path = _read(urdf)
     offset = None if tool_offset is None else np.asarray(tool_offset, float).reshape(4, 4)
     chain = model.chain(tip_link, base_link, tool_offset=offset)
@@ -604,6 +812,11 @@ def arm_from_urdf(
         "links": list(chain.links),
         "frames": chain.link_frames,
     }
+    arm_meshes, mesh_poses = (), None
+    if meshes:
+        base_dir = None if path is None else path.parent
+        arm_meshes, mesh_poses, note = urdf_meshes(model, chain, base_dir, package_dirs)
+        meta["mesh_note"] = note
     if path is not None:
         # WHY only for a file: a saved result rebuilds its arm from this recipe (analyze.rebuild),
         # and an in-memory string has no address to rebuild from, so it records none rather than
@@ -617,6 +830,9 @@ def arm_from_urdf(
             "n_seeds": n_seeds,
             "name": name,
         }
+        if meshes:
+            kwargs["meshes"] = True
+            kwargs["package_dirs"] = [str(d) for d in package_dirs]
         kwargs["tool_offset"] = None if offset is None else offset.tolist()
         meta["factory"] = ["robot_reach.urdf", "arm_from_urdf", kwargs]
     solver_text = "numeric IK" if ik is None else "given IK"
@@ -632,6 +848,8 @@ def arm_from_urdf(
         plane=chain.plane(),
         description=f"{model.name} from URDF, {chain.base_link} -> {tip_link}, {chain.dof} DOF, {solver_text}",
         meta=meta,
+        meshes=arm_meshes,
+        mesh_poses=mesh_poses,
     )
 
 
@@ -662,7 +880,8 @@ def chains(urdf_or_desc) -> list[tuple[str, str, int]]:
     return out
 
 
-def analyze_chains(source, tips=None, *, floor_z: float | None = None, quick: bool = True, **analyze_kw) -> dict:
+def analyze_chains(source, tips=None, *, floor_z: float | None = None, quick: bool = True, arm_kw: dict | None = None,
+                   **analyze_kw) -> dict:
     """Reachability of every kinematic chain of a robot (Zach's 2026-11-19 pipeline, step 5: "with
     1 click I can see the reachability map and the workspace of the different kinematic chains").
 
@@ -672,7 +891,8 @@ def analyze_chains(source, tips=None, *, floor_z: float | None = None, quick: bo
     WHY `quick` (default on): the generic numeric IK costs ~0.4 ms per target x 8 seeds, so the full
     132-orientation map at the default grid would take minutes per 6-DOF chain. `quick` uses 48
     orientations (60 deg tilt rings x 4 rolls) and a grid step of extent/12 — about half a minute
-    for a 6-DOF chain — and anything passed explicitly wins."""
+    for a 6-DOF chain — and anything passed explicitly wins. `arm_kw` goes to `arm_from_urdf` for
+    every chain (``{"meshes": True}`` to draw the URDF's meshes in the viewer)."""
     from .analyze import analyze
     from .orientations import OrientationSet
 
@@ -685,7 +905,11 @@ def analyze_chains(source, tips=None, *, floor_z: float | None = None, quick: bo
             raise ValueError(f"no movable chain ends at {sorted(missing)}; chains: {[c[1] for c in chains(source)]}")
     results = {}
     for base, tip, dof in found:
-        arm = arm_from_urdf(source, tip, base) if not hasattr(source, "to_urdf_string") else arm_from_description(source, tip, base)
+        akw = dict(arm_kw or {})
+        if hasattr(source, "to_urdf_string"):
+            arm = arm_from_description(source, tip, base, **akw)
+        else:
+            arm = arm_from_urdf(source, tip, base, **akw)
         kw = dict(analyze_kw)
         if quick:
             if arm.task != "position":

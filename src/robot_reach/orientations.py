@@ -95,6 +95,39 @@ class OrientationSet:
             approach=a,
         )
 
+    def resolution(self) -> dict:
+        """The angular resolution of this set, read back from the set itself (so it is true for a
+        loaded map too): tilt rings, roll steps and counts, in degrees.
+
+        WHY (Zach, 2026-11-23: "its important though to basically set what you angular resolution is
+        for this ... rotation range, and tilt range ... and then you set the step angle"): every
+        "N / M orientations" in the viewer needs its denominator explained."""
+        tilts = np.unique(np.round(np.rad2deg(self.tilt), 6))
+        rolls = np.unique(np.round(np.rad2deg(self.roll), 6))
+        n_rolls = len(rolls)
+        return {
+            "approach": tuple(float(v) for v in self.approach),
+            "tilt_max_deg": float(tilts.max()) if len(tilts) else 0.0,
+            "tilt_step_deg": float(np.min(np.diff(tilts))) if len(tilts) > 1 else 0.0,
+            "n_tilt_rings": int(len(tilts)),
+            "n_directions": int(len(self) // max(n_rolls, 1)),
+            "roll_step_deg": float(360.0 / n_rolls) if n_rolls > 1 else 0.0,
+            "roll_max_deg": float(rolls.max()) if len(rolls) else 0.0,
+            "n_rolls": int(n_rolls),
+            "n_orientations": int(len(self)),
+        }
+
+    def describe(self) -> str:
+        """One line: ``approach -z: tilt 0…180° in 45° rings (22 directions) × roll 0…300° every 60°
+        (6 rolls) = 132 orientations``."""
+        r = self.resolution()
+        a = np.asarray(r["approach"])
+        axis = next((f"{'+-'[int(a[i] < 0)]}{'xyz'[i]}" for i in range(3) if abs(abs(a[i]) - 1) < 1e-9), f"({a[0]:+.2f}, {a[1]:+.2f}, {a[2]:+.2f})")
+        tilt = (f"tilt 0…{r['tilt_max_deg']:.0f}° from it in {r['tilt_step_deg']:.0f}° rings" if r["n_tilt_rings"] > 1 else "tilt 0° only")
+        roll = (f"roll 0…{r['roll_max_deg']:.0f}° every {r['roll_step_deg']:.0f}°" if r["n_rolls"] > 1 else "one roll")
+        return (f"approach {axis}: {tilt} ({r['n_directions']} directions) × {roll} ({r['n_rolls']} rolls) "
+                f"= {r['n_orientations']} orientations")
+
     @classmethod
     def identity(cls) -> OrientationSet:
         """Position-only arms: one placeholder orientation that is never scored."""
