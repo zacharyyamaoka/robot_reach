@@ -265,8 +265,8 @@ def build(media: bool = False, run: bool = False) -> Path:
             still("01-ur5e-workspace", "The UR5e's workspace, coloured by level: how much of the pose the arm controls at each point."),
             still("02-clicked", "Click a point: the arm is posed at a working IK solution there, re-checked by FK."),
             still(("03-ik-configurations", "03-branches"), "<b>Next ▶</b> steps through every working orientation and IK configuration at that point."),
-            still("04-dexterous", f"<b>Show → {esc(LEVEL_NAMES[6])}</b>: only the points reachable in every sampled orientation."),
-            still(("05-top-down", "05-four-dof"), f"<b>Show → {esc(LEVEL_NAMES[4])}</b>: straight down at any yaw, the top-down picking workspace."),
+            still("04-dexterous", f"Untick every level but <b>{esc(LEVEL_NAMES[6])}</b> in the legend: only the points reachable in every sampled orientation remain."),
+            still(("05-top-down", "05-four-dof"), f"Untick every level but <b>{esc(LEVEL_NAMES[4])}</b>: the points where the tool can point straight down at any yaw, the picking workspace."),
             still("06-cut", "<b>Cut → y</b>: look inside the shell."),
         ]),
         "@@SHOTS_JOINT@@": "".join([

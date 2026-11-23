@@ -161,6 +161,38 @@ def record() -> list:
                 skipped.append({"dropdown": labels})
                 return False
 
+            def only_level(name, wait=1500) -> bool:
+                """Legend list: tick the one workspace level row called `name`, untick every other level row."""
+                rows = {}
+                for i in range(page.get_by_role("checkbox").count()):
+                    box_ = page.get_by_role("checkbox").nth(i)
+                    label = (box_.evaluate("e => (e.labels && e.labels[0] ? e.labels[0].innerText : e.closest('div').innerText)") or "").strip()
+                    m = re.match(r"^(unreachable|reachable|top-down|hemisphere|dexterous)\b", label)
+                    if m:
+                        rows[m.group(1)] = box_
+                if name not in rows:
+                    skipped.append({"legend_row": name, "rows": sorted(rows)})
+                    return False
+                for lv, box_ in rows.items():
+                    want = lv == name
+                    if box_.is_checked() != want:
+                        box_.set_checked(want, force=True)
+                        page.wait_for_timeout(500)
+                page.mouse.move(cx, cy - 200)  # WHY: park the pointer off the panel so no hint tooltip covers the legend
+                page.wait_for_timeout(wait)
+                return True
+
+            def default_levels():
+                """Back to the viewer's start state: every level shown except the empty one."""
+                for i in range(page.get_by_role("checkbox").count()):
+                    box_ = page.get_by_role("checkbox").nth(i)
+                    label = (box_.evaluate("e => (e.labels && e.labels[0] ? e.labels[0].innerText : e.closest('div').innerText)") or "").strip()
+                    m = re.match(r"^(unreachable|reachable|top-down|hemisphere|dexterous)\b", label)
+                    if m and box_.is_checked() != (m.group(1) != "unreachable"):
+                        box_.set_checked(m.group(1) != "unreachable", force=True)
+                        page.wait_for_timeout(300)
+                page.wait_for_timeout(800)
+
             def orbit(dx, dy):
                 page.mouse.move(cx + 200, cy + 200)
                 page.mouse.down()
@@ -181,11 +213,11 @@ def record() -> list:
             steps.append({"step": "after Next x4", "counter": counter()})
             shot("03-ik-configurations")
             button(["Clear", "Deselect"], 1000)
-            if choose(["Show"], LEVEL_DEXTEROUS):
+            if only_level("dexterous"):
                 shot("04-dexterous")
-            if choose(["Show"], LEVEL_TOP_DOWN):
+            if only_level("top-down"):
                 shot("05-top-down")
-            choose(["Show"], LEVEL_REACHABLE, 800)
+            default_levels()
             if choose(["Cut"], [r"^y$"]):
                 shot("06-cut")
                 choose(["Cut"], [r"^none$"], 800)
