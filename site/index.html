@@ -215,8 +215,8 @@ joint-space maps, the viewer) is computed from those two functions.</p></div>
 
 <span class="n">result</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"out/quickstart_ur5e"</span><span class="p">)</span>  <span class="c1"># plain npz + json; rr.load("out/quickstart_ur5e").display() opens it live in viser</span>
 </code></pre></div>
-<pre class="out"><code>ur5e: 6859 grid points x 132 orientations
-hemisphere workspace: 1409 of 6859 points
+<pre class="out"><code>ur5e: 4224 grid points x 132 orientations
+hemisphere workspace: 1409 of 4224 points
 target (m): [ 0.416 -0.097  0.06 ] | q (deg): [148.7 -48.6 103.6  34.9  90.   58.7]
 1056 working (orientation, IK configuration) pairs at this point</code></pre>
 <p class="footnote">That output is <code>site/quickstart.py</code> run as shown. Open the five example robots in the viewer:</p>
@@ -228,8 +228,8 @@ target (m): [ 0.416 -0.097  0.06 ] | q (deg): [148.7 -48.6 103.6  34.9  90.   58
 <section id="any-dof">
 <div class="section-head"><h2>Any DOF, one call</h2>
 <p>The same <code>rr.analyze(arm)</code> on five arms, from a single pendulum to a six-joint UR5e. <strong>Verified</strong>
-counts joint solutions that passed every check; the bar splits each grid by level. 905,388 target poses on the UR5e, 1,006,878 verified joint solutions.</p></div>
-<div class="table" role="table" aria-label="The same analyze() on five arms"><div class="tr head" role="row"><span role="columnheader">Robot</span><span role="columnheader" class="num">Grid</span><span role="columnheader" class="num" title="IK configurations per target (elbow up / down, wrist flip …)">IK&nbsp;cfg</span><span role="columnheader" class="num">Verified</span><span role="columnheader" class="bars">Grid points by level</span><span role="columnheader" class="num">Compute</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>Pendulum</strong><small>1 joint · position</small></span><span class="num" role="cell">–</span><span class="num" role="cell">1</span><span class="num" role="cell">–</span><span class="bars none" role="cell">a curve, not a volume: the FK cloud is the workspace</span><span class="num dim" role="cell">0.1 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>RR arm</strong><small>2 joints · position</small></span><span class="num" role="cell">1,476</span><span class="num" role="cell">2</span><span class="num strong" role="cell">516</span><span class="bars" role="cell" title="368 of 1,476 grid points reachable"><i style="width:24.93%;background:rgb(68,1,84)" title="reachable: 368 points"></i></span><span class="num dim" role="cell">0.1 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>Five-bar (closed chain)</strong><small>2 joints · position</small></span><span class="num" role="cell">1,517</span><span class="num" role="cell">4</span><span class="num strong" role="cell">1,348</span><span class="bars" role="cell" title="745 of 1,517 grid points reachable"><i style="width:49.11%;background:rgb(68,1,84)" title="reachable: 745 points"></i></span><span class="num dim" role="cell">0.1 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>3-joint shoulder</strong><small>3 joints · position</small></span><span class="num" role="cell">5,776</span><span class="num" role="cell">4</span><span class="num strong" role="cell">2,548</span><span class="bars" role="cell" title="1,056 of 5,776 grid points reachable"><i style="width:18.28%;background:rgb(68,1,84)" title="reachable: 1,056 points"></i></span><span class="num dim" role="cell">1.5 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>UR5e</strong><small>6 joints · full pose</small></span><span class="num" role="cell">6,859<small>× 132</small></span><span class="num" role="cell">8</span><span class="num strong" role="cell">1,006,878</span><span class="bars" role="cell" title="1,955 of 6,859 grid points reachable"><i style="width:8.15%;background:rgb(68,1,84)" title="reachable: 559 points"></i><i style="width:8.30%;background:rgb(49,104,141)" title="top-down: 569 points"></i><i style="width:1.87%;background:rgb(55,183,119)" title="hemisphere: 128 points"></i><i style="width:10.19%;background:rgb(253,231,37)" title="dexterous: 699 points"></i></span><span class="num dim" role="cell">39.0 s</span></div></div>
+counts joint solutions that passed every check; the bar splits each grid by level. 187,440 target poses on the UR5e, 610,440 verified joint solutions.</p></div>
+<div class="table" role="table" aria-label="The same analyze() on five arms"><div class="tr head" role="row"><span role="columnheader">Robot</span><span role="columnheader" class="num">Grid</span><span role="columnheader" class="num" title="IK configurations per target (elbow up / down, wrist flip …)">IK&nbsp;cfg</span><span role="columnheader" class="num">Verified</span><span role="columnheader" class="bars">Grid points by level</span><span role="columnheader" class="num">Compute</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>Pendulum</strong><small>1 joint · position</small></span><span class="num" role="cell">–</span><span class="num" role="cell">1</span><span class="num" role="cell">–</span><span class="bars none" role="cell">a curve, not a volume: the FK cloud is the workspace</span><span class="num dim" role="cell">0.1 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>RR arm</strong><small>2 joints · position</small></span><span class="num" role="cell">1,266</span><span class="num" role="cell">2</span><span class="num strong" role="cell">516</span><span class="bars" role="cell" title="368 of 1,266 grid points reachable"><i style="width:29.07%;background:rgb(68,1,84)" title="reachable: 368 points"></i></span><span class="num dim" role="cell">0.1 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>Five-bar (closed chain)</strong><small>2 joints · position</small></span><span class="num" role="cell">1,142</span><span class="num" role="cell">4</span><span class="num strong" role="cell">1,348</span><span class="bars" role="cell" title="745 of 1,142 grid points reachable"><i style="width:65.24%;background:rgb(68,1,84)" title="reachable: 745 points"></i></span><span class="num dim" role="cell">0.1 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>3-joint shoulder</strong><small>3 joints · position</small></span><span class="num" role="cell">3,847</span><span class="num" role="cell">4</span><span class="num strong" role="cell">2,548</span><span class="bars" role="cell" title="1,056 of 3,847 grid points reachable"><i style="width:27.45%;background:rgb(68,1,84)" title="reachable: 1,056 points"></i></span><span class="num dim" role="cell">1.0 s</span></div><div class="tr" role="row"><span class="name" role="cell"><strong>UR5e</strong><small>6 joints · full pose</small></span><span class="num" role="cell">1,420<small>× 132</small></span><span class="num" role="cell">8</span><span class="num strong" role="cell">610,440</span><span class="bars" role="cell" title="928 of 1,420 grid points reachable"><i style="width:11.62%;background:rgb(68,1,84)" title="reachable: 165 points"></i><i style="width:25.21%;background:rgb(49,104,141)" title="top-down: 358 points"></i><i style="width:2.46%;background:rgb(55,183,119)" title="hemisphere: 35 points"></i><i style="width:26.06%;background:rgb(253,231,37)" title="dexterous: 370 points"></i></span><span class="num dim" role="cell">18.5 s</span></div></div>
 <div class="footnote"><p class="legend"><span class="sw"><i style="background:rgb(68,1,84)"></i><b>reachable</b>&nbsp;position only</span><span class="sw"><i style="background:rgb(49,104,141)"></i><b>top-down</b>&nbsp;straight down, any yaw</span><span class="sw"><i style="background:rgb(55,183,119)"></i><b>hemisphere</b>&nbsp;any approach in the lower hemisphere</span><span class="sw"><i style="background:rgb(253,231,37)"></i><b>dexterous</b>&nbsp;every orientation</span></p>
 <p>Levels count how much of the pose the arm controls at a point; position-only arms stop at the first. Numbers are the saved
 results the viewer below loads.</p></div>
@@ -239,7 +239,7 @@ results the viewer below loads.</p></div>
 <div class="section-head"><h2>Live insight in viser</h2>
 <p>The result is plain arrays on disk; the viewer draws them and its Python backend recomputes as you click:
 map a dragged box finer, check every orientation at one point, jog the arm and watch its status and torque.</p></div>
-<div class="grid"><figure class="shot"><a href="media/01-ur5e-workspace.jpg"><img src="media/01-ur5e-workspace.jpg" alt="The UR5e&#x27;s workspace, coloured by level: how much of the pose the arm controls at each point." loading="lazy"></a><figcaption>The UR5e's workspace, coloured by level: how much of the pose the arm controls at each point.</figcaption></figure><figure class="shot"><a href="media/02-clicked.jpg"><img src="media/02-clicked.jpg" alt="Click a point: the arm is posed at a working IK solution there, re-checked by FK." loading="lazy"></a><figcaption>Click a point: the arm is posed at a working IK solution there, re-checked by FK.</figcaption></figure><figure class="shot"><a href="media/03-ik-configurations.jpg"><img src="media/03-ik-configurations.jpg" alt="Next ▶ steps through every working orientation and IK configuration at that point." loading="lazy"></a><figcaption><b>Next ▶</b> steps through every working orientation and IK configuration at that point.</figcaption></figure><figure class="shot"><a href="media/04-dexterous.jpg"><img src="media/04-dexterous.jpg" alt="Show → dexterous: only the points reachable in every sampled orientation." loading="lazy"></a><figcaption><b>Show → dexterous</b>: only the points reachable in every sampled orientation.</figcaption></figure><figure class="shot"><a href="media/05-top-down.jpg"><img src="media/05-top-down.jpg" alt="Show → top-down: straight down at any yaw, the top-down picking workspace." loading="lazy"></a><figcaption><b>Show → top-down</b>: straight down at any yaw, the top-down picking workspace.</figcaption></figure><figure class="shot"><a href="media/06-cut.jpg"><img src="media/06-cut.jpg" alt="Cut → y: look inside the shell." loading="lazy"></a><figcaption><b>Cut → y</b>: look inside the shell.</figcaption></figure></div>
+<div class="grid"><figure class="shot"><a href="media/01-ur5e-workspace.jpg"><img src="media/01-ur5e-workspace.jpg" alt="The UR5e&#x27;s workspace, coloured by level: how much of the pose the arm controls at each point." loading="lazy"></a><figcaption>The UR5e's workspace, coloured by level: how much of the pose the arm controls at each point.</figcaption></figure><figure class="shot"><a href="media/02-clicked.jpg"><img src="media/02-clicked.jpg" alt="Click a point: the arm is posed at a working IK solution there, re-checked by FK." loading="lazy"></a><figcaption>Click a point: the arm is posed at a working IK solution there, re-checked by FK.</figcaption></figure><figure class="shot"><a href="media/03-ik-configurations.jpg"><img src="media/03-ik-configurations.jpg" alt="Next ▶ steps through every working orientation and IK configuration at that point." loading="lazy"></a><figcaption><b>Next ▶</b> steps through every working orientation and IK configuration at that point.</figcaption></figure><figure class="shot"><a href="media/06-cut.jpg"><img src="media/06-cut.jpg" alt="Cut → y: look inside the shell." loading="lazy"></a><figcaption><b>Cut → y</b>: look inside the shell.</figcaption></figure></div>
 </section>
 
 <section id="joint-space">
@@ -684,8 +684,8 @@ arm = rr.Arm(
     joint_names=(&quot;q1&quot;, &quot;q2&quot;, &quot;q3&quot;),
     lower=(-3.0, -1.0, -2.5),          # rad (m for prismatic)
     upper=(3.0, 2.0, 2.5),
-    fk=my_fk,                          # (N, dof) -&gt; (N, 4, 4), or ((N, 4, 4), ok (N,)) when FK can fail
-    ik=my_ik,                          # (N, 4, 4) -&gt; (q (N, S, dof), code (N, S)): EVERY branch, a Code each
+    fk=my_fk,                          # (N, dof) -&gt; (N, 4, 4), or ((N, 4, 4), ok (N,)) / ((N, 4, 4), code (N,))
+    ik=my_ik,                          # (N, 4, 4) -&gt; (q (N, S, dof), code (N, S)): EVERY IK solution, a Code each
     task=&quot;position&quot;,                   # &quot;pose&quot; (6-DOF) | &quot;axis&quot; (5-DOF, roll free) | &quot;position&quot;
 )
 </code></pre>
@@ -701,12 +701,12 @@ arm = rr.Arm(
 <tr>
 <td><code>fk</code></td>
 <td><code>(N, dof) -&gt; (N, 4, 4)</code></td>
-<td>base-&gt;tool pose; the tool's +Z is the approach axis</td>
+<td>base-&gt;tool pose; the tool's +Z is the approach axis; may also return a <code>Code</code> per posture (<code>SELF_COLLISION</code>, <code>FK_FAIL</code>, ...)</td>
 </tr>
 <tr>
 <td><code>ik</code></td>
 <td><code>(N, 4, 4) -&gt; (q (N, S, dof), code (N, S))</code></td>
-<td>all S branches (2 for an elbow, 8 for a UR); unused slot = <code>Code.PAD</code></td>
+<td>all S IK solutions (2 for an elbow, 8 for a UR); unused slot = <code>Code.PAD</code>; a collision is a code here</td>
 </tr>
 <tr>
 <td><code>task</code></td>
@@ -725,8 +725,13 @@ arm = rr.Arm(
 </tr>
 <tr>
 <td><code>collision</code></td>
-<td><code>(N, dof) -&gt; (N,)</code> bool</td>
-<td>None = not checked (never assumed free)</td>
+<td><code>(N, dof) -&gt; (N,)</code> bool or <code>Code</code></td>
+<td>optional thin adapter for a separate checker, folded into the codes; None = not checked here</td>
+</tr>
+<tr>
+<td><code>configurations</code></td>
+<td><code>IKConfigurations</code></td>
+<td>the questions that name the IK solutions (UR: shoulder × elbow × wrist) and <code>tag(q)</code> answering them from a posture</td>
 </tr>
 <tr>
 <td><code>singular</code></td>
@@ -760,11 +765,17 @@ functions (<code>fk(q) -&gt; 4x4</code>, <code>ik(T) -&gt; [q, ...]</code>).</p>
 <p>Methods every consumer can call on an <code>Arm</code>: <code>forward(q) -&gt; (T, ok)</code>, <code>inverse(T) -&gt; (q, code)</code>
 (both chunked), <code>check(q, floor_z=, singular_tol=) -&gt; code</code>, <code>jacobian(q)</code> (N, 6, dof),
 <code>manipulability(q)</code>, <code>gravity_torque(q)</code>, <code>surface(q)</code>, <code>within_limits(q)</code>, <code>dof</code>, <code>limits</code>.</p>
-<p><strong>The library re-checks every IK claim</strong>: joint limits (trying the ±2π twin of revolute joints), the
-FK round trip, duplicate branches, collision, torque and singularity. A lazy solver cannot overclaim.</p>
+<p><strong>The library re-checks what it can from the maths alone</strong>: joint limits (trying the ±2π twin of revolute
+joints), the FK round trip, duplicate solutions, torque and singularity. A lazy solver cannot overclaim.</p>
+<p><strong>Collision is reported by your FK/IK</strong>, never computed here: return <code>Code.SELF_COLLISION</code>,
+<code>Code.ENVIRONMENT_COLLISION</code> (or <code>Code.COLLISION</code>) per IK solution or per FK posture and every view
+enumerates and colours it. <code>analyze(floor_z=)</code> is only a convenience floor for toy arms.</p>
+<p><strong>The tool frame is whatever your FK/IK return</strong>: reach is measured for it (add a gripper's TCP to the
+chain and the map is the fingers'). One serial chain per <code>Arm</code> today; multiple chains are a planned
+extension (each its own <code>Arm</code> until then).</p>
 <h3>Built-in arms (<code>robot_reach.robots</code>)</h3>
 <p><code>pendulum()</code> 1-DOF · <code>rr()</code> 2-DOF · <code>five_bar()</code> 2-DOF closed chain · <code>shoulder3()</code> 3-DOF ·
-<code>ur5e()</code> 6-DOF closed-form IK, 8 branches.</p>
+<code>ur5e()</code> 6-DOF closed-form IK, 8 IK solutions named by <code>configurations</code>. No floor: the UR arms are in free space.</p>
 <h3>From a URDF or a RobotDescription (<code>robot_reach.urdf</code>)</h3>
 <pre><code class="language-python">from robot_reach.urdf import analyze_chains, arm_from_description, arm_from_urdf, chains
 
@@ -778,16 +789,18 @@ damped-least-squares IK runs from 8 seeds per target and merges duplicates, so s
 branches still come back (the worked example's 3-DOF URDF: 4 branches at one target). Pass <code>ik=</code> when
 you have a closed form; it is several times faster.</p>
 <h3>2. Compute: <code>analyze()</code></h3>
-<pre><code class="language-python">result = rr.analyze(arm, floor_z=0.0)         # step=, box=, orientations=, n_fk=, joint_axes=, singular_tol=, seed=
+<pre><code class="language-python">result = rr.analyze(arm)                      # step=, steps_across=, grid_shape=, box=, orientations=, n_fk=, joint_axes=, singular_tol=, seed=, floor_z=
 </code></pre>
 <ol>
 <li><strong>FK cloud</strong> — sample joints, run FK, classify each sample. Works for any DOF (a pendulum's workspace
    is a circle no grid would hit) and bounds the grid, so nobody guesses an extent.</li>
-<li><strong>Reach map</strong> — a grid inside that box × one shared <code>OrientationSet</code> (22 approach directions × 6
-   rolls = 132), IK at every target, every branch kept with its final code.</li>
+<li><strong>Reach map</strong> — the box's lattice kept inside the tightest of box / sphere / cylinder / convex hull
+   (<code>grid_shape="auto"</code>, padded one step; <code>rr.sampling.fit_grid</code>) × one shared <code>OrientationSet</code> (22 approach
+   directions × 6 rolls = 132), IK at every target, every IK solution kept with its final code and its IK
+   configuration. <code>config["settings"]</code> records the step, grid shape, lattice and orientation steps.</li>
 <li><strong>Joint maps</strong> — the 2R picture for joint pairs: <code>slice</code> (others at home) and <code>sweep</code> (others
    sampled; value = fraction that works). 1-DOF: a line with its gravity torque.</li>
-<li><strong>Joint ranges</strong> — limits vs the range the working solutions actually use.</li>
+<li><strong>Joint ranges</strong> — per joint, a 10° histogram of the working solutions' angles, against its limits.</li>
 </ol>
 <p>Lower-level pieces are public too: <code>rr.fk_cloud</code>, <code>rr.reach_map(arm, positions, orientations)</code>,
 <code>rr.joint_map</code>, <code>rr.joint_ranges</code>, <code>rr.Box</code>, <code>rr.OrientationSet.sample(approach=...)</code>.</p>
@@ -829,12 +842,22 @@ layout changes; the examples CLI recomputes a result saved under an older one): 
 <tr>
 <td><code>sol_index</code>, <code>sol_q</code></td>
 <td>(K,), (K, dof)</td>
-<td>every OK branch: flat index into (P, O, S), and its joints</td>
+<td>every OK IK solution: flat index into (P, O, S), and its joints</td>
+</tr>
+<tr>
+<td><code>sol_config</code>, <code>configurations</code></td>
+<td>(K,) uint8, <code>IKConfigurations</code></td>
+<td>each solution's IK configuration (from its posture), and the questions</td>
+</tr>
+<tr>
+<td><code>filtered(allowed)</code></td>
+<td><code>ReachMap</code></td>
+<td>only the allowed IK configurations: <code>m.filtered(m.configurations.allowed(elbow="up"))</code></td>
 </tr>
 <tr>
 <td><code>n_solutions</code></td>
 <td>(P, O)</td>
-<td>count of OK branches</td>
+<td>count of OK IK solutions</td>
 </tr>
 <tr>
 <td><code>valid_mask</code>, <code>reach_scores</code></td>
@@ -844,17 +867,17 @@ layout changes; the examples CLI recomputes a result saved under an older one): 
 <tr>
 <td><code>joint_solutions</code></td>
 <td>(P, O, dof)</td>
-<td>first OK branch per pose, NaN if none (v1's shape; robot_trajectories duck-types it)</td>
+<td>first OK solution per pose, NaN if none (v1's shape; robot_trajectories duck-types it)</td>
 </tr>
 <tr>
 <td><code>levels(threshold=1.0)</code></td>
 <td>(P,)</td>
-<td>pose DOF the arm controls there: 0, 3, 4, 5, 6</td>
+<td>workspace level as an int key of <code>LEVEL_NAMES</code>: 0 unreachable, 3 reachable, 4 top-down, 5 hemisphere, 6 dexterous</td>
 </tr>
 <tr>
 <td><code>workspace(kind, threshold=1.0)</code></td>
 <td>(P,) bool</td>
-<td><code>reachable</code> · <code>four_dof</code> · <code>hemisphere</code> · <code>dexterous</code></td>
+<td><code>reachable</code> · <code>four_dof</code> (top-down) · <code>hemisphere</code> · <code>dexterous</code></td>
 </tr>
 <tr>
 <td><code>score(kind)</code></td>
@@ -864,7 +887,7 @@ layout changes; the examples CLI recomputes a result saved under an older one): 
 <tr>
 <td><code>solutions(p)</code></td>
 <td>list</td>
-<td>every OK <code>(orientation index, branch index, q)</code> at point p</td>
+<td>every OK <code>(orientation index, solver slot, q)</code> at point p (<code>solution_configs(p)</code>: their configurations)</td>
 </tr>
 <tr>
 <td><code>target(p, o)</code></td>
@@ -878,17 +901,20 @@ layout changes; the examples CLI recomputes a result saved under an older one): 
 </tr>
 </tbody>
 </table>
-<p>Levels: <strong>3</strong> reachable (some orientation works) · <strong>4</strong> straight-down approach at every yaw (top-down
-picking) · <strong>5</strong> hemisphere (every approach within 90° of the reference, every roll) · <strong>6</strong> dexterous
-(every sampled orientation). All four are masks over one map.</p>
+<p>Workspaces, by name (<code>rr.LEVEL_NAMES</code>): <strong>reachable</strong> (at least one orientation works) · <strong>top-down</strong>
+(straight down along the approach axis at every yaw) · <strong>hemisphere</strong> (every approach in the hemisphere,
+every roll) · <strong>dexterous</strong> (every sampled orientation). Nested: each includes the next. All four are
+masks over one map.</p>
 <p><strong><code>Code</code></strong> (<code>rr.Code</code>, <code>rr.CODE_LABELS</code>, <code>rr.CODE_COLORS</code>) — one vocabulary for every view:
-<code>OK</code>, <code>NO_SOLUTION</code>, <code>JOINT_LIMIT</code>, <code>SINGULAR</code>, <code>COLLISION</code>, <code>TORQUE_LIMIT</code>, <code>FK_MISMATCH</code>, <code>FK_FAIL</code>
-(linkage cannot close), <code>PAD</code> (unused slot).</p>
+<code>OK</code>, <code>NO_SOLUTION</code>, <code>JOINT_LIMIT</code>, <code>SINGULAR</code>, <code>COLLISION</code>, <code>SELF_COLLISION</code>, <code>ENVIRONMENT_COLLISION</code>
+(the three collision codes are returned by your IK/FK; <code>rr.codes.is_collision</code>), <code>TORQUE_LIMIT</code>,
+<code>FK_MISMATCH</code>, <code>FK_FAIL</code> (linkage cannot close), <code>EXCLUDED</code> (a filtered-out IK configuration, in memory
+only), <code>PAD</code> (unused slot).</p>
 <p>Typical downstream queries today are a few lines of numpy over these arrays (worked example §4-5):</p>
 <pre><code class="language-python">m = rr.load(&quot;out/ur5e&quot;).reach
 hemi = np.flatnonzero(m.workspace(&quot;hemisphere&quot;))             # sample a workspace
 p = np.random.default_rng(0).choice(hemi)
-for o, branch, q in m.solutions(p): ...                      # every IK branch there
+for o, slot, q in m.solutions(p): ...                        # every IK solution there
 belt = rr.Box(center=(0.6, 0, 0.15), size=(0.5, 0.8, 0.2))
 over_belt = belt.contains(m.positions) &amp; m.workspace(&quot;four_dof&quot;)  # top-down pickable over the belt
 fine = rr.reach_map(arm, belt.grid(0.05), rr.OrientationSet.sample())   # finer map of one volume
@@ -898,14 +924,17 @@ fine = rr.reach_map(arm, belt.grid(0.05), rr.OrientationSet.sample())   # finer 
 <pre><code class="language-python">result.display()                              # blocks; the viewer recomputes live in Python
 from robot_reach.overlay import add_reach_map
 overlay = add_reach_map(server, result.reach, parent_frame=&quot;/cell/robot_1&quot;)   # into anyone's viser scene
-overlay.kind = &quot;four_dof&quot;; overlay.visible = False
+overlay.kind = &quot;four_dof&quot;; overlay.update(colormap=&quot;magma&quot;, reverse=True); overlay.visible = False
 </code></pre>
 <p><code>overlay.py</code> imports nothing from viser and works on viser 1.0.16 and 1.1.1. CLI:
 <code>python -m robot_reach examples | urdf &lt;path&gt; | rest &lt;spec&gt; [--solve]</code>.</p>
-<p>In the viewer: click a voxel to put the arm there, <strong>Next ▶</strong> walks every (orientation, IK branch);
-<strong>Cut</strong>, <strong>Blob</strong> (voxel surface that keeps holes), <strong>FK cloud</strong>, <strong>Jog</strong> sliders with live code and
-torque, <strong>Ask here</strong> → <strong>Compute box</strong> (finer map of a dragged box) and <strong>Drop POI</strong> (every
-orientation at one point).</p>
+<p>In the viewer: a settings card (what the map was computed with; edit → <strong>Compute workspace</strong>), colour by
+workspace / IK solutions / fraction / consistency through a colormap (viridis default) or a traffic light,
+a legend list (click a bin to hide it), <strong>IK configurations</strong> toggles that filter everything, click a
+voxel to put the arm there, <strong>Next ▶</strong> walks every (orientation, IK solution) with its configuration's
+name; <strong>Cut</strong>, <strong>Blob</strong> (voxel surface that keeps holes), <strong>FK cloud</strong>, <strong>Jog</strong> sliders with live code and
+torque, <strong>Ask here</strong> → a box you move and tilt in 3-D (its −Z is the approach) → <strong>Compute box</strong> and
+<strong>Drop POI</strong>; joint ranges as one histogram per joint; show/hide the skeleton.</p>
 <h3>6. Rest and ready poses (<code>robot_reach.rest</code>, <code>robot_reach.goals</code>)</h3>
 <p><code>RestStudy(arm, Scene, motors, gates, criteria).measure(q)</code> → footprint, clearance over a belt and
 holding power; <code>goals.solve(study, PoseGoal(...))</code> → gates, Pareto set, pick, and a NamedPose-ready
@@ -961,7 +990,7 @@ a workspace message itself today; a typed workspace hand-off is in the proposals
 <circle cx="14" cy="44" r="4.2" fill="var(--pt-logo-body)"/><circle cx="22" cy="24" r="3.4" fill="var(--pt-logo-belly)" stroke="var(--pt-logo-body)" stroke-width="2"/>
 <circle cx="44" cy="14.4" r="4.4" fill="var(--pt-logo-fin)"/></svg><p>Start with the <a href="#happy-path">quickstart</a>, watch the <a href="#viewer">viewer</a>, or read the <a href="#example">worked example</a>.</p></section>
 </main>
-<footer>robot_reach (BAM Reach v2) · MIT · every number and picture on this page was produced by the code at 9593d87, built 2026-11-23.</footer>
+<footer>robot_reach (BAM Reach v2) · MIT · every number and picture on this page was produced by the code at e27f63d, built 2026-11-23.</footer>
 <script>
 document.querySelector('.theme').addEventListener('click',function(){var r=document.documentElement,dark=r.classList.contains('is-dark');r.dataset.theme=dark?'light':'dark';try{localStorage.setItem('rr-theme',r.dataset.theme)}catch(e){}sync()});
 function sync(){var r=document.documentElement,t=r.dataset.theme;r.classList.toggle('is-dark',t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches)}sync();

@@ -1,0 +1,69 @@
+[
+ {
+  "step": "01-ur5e-workspace",
+  "t": 7.45
+ },
+ {
+  "step": "click",
+  "changed": true,
+  "counter": "1 / 816"
+ },
+ {
+  "step": "02-clicked",
+  "t": 9.09
+ },
+ {
+  "step": "after Next x4",
+  "counter": "5 / 816"
+ },
+ {
+  "step": "03-ik-configurations",
+  "t": 21.27
+ },
+ {
+  "step": "06-cut",
+  "t": 24.26
+ },
+ {
+  "step": "07-five-bar",
+  "t": 28.9
+ },
+ {
+  "step": "08-five-bar-clicked",
+  "t": 31.89
+ },
+ {
+  "step": "09-five-bar-joint-map",
+  "t": 34.15
+ },
+ {
+  "step": "10-shoulder3",
+  "t": 37.71
+ },
+ {
+  "step": "end",
+  "t": 38.31
+ },
+ {
+  "errors": [
+   "Failed to load resource: net::ERR_FILE_NOT_FOUND"
+  ],
+  "skipped": [
+   {
+    "dropdown": [
+     "Show"
+    ]
+   },
+   {
+    "dropdown": [
+     "Show"
+    ]
+   },
+   {
+    "dropdown": [
+     "Show"
+    ]
+   }
+  ]
+ }
+]
