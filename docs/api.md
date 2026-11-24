@@ -6,7 +6,7 @@ computes once where the arm can go and which postures work, with one status code
 The result is plain arrays on disk; the viser viewer shows it and recomputes on demand in its Python
 backend; anything downstream reads the same arrays.
 
-This page describes the API **as it is on `main`** (2026-11-23). The worked example runs every call
+This page describes the API **as it is on `main`** (2026-11-24). The worked example runs every call
 below: [`notebooks/reach_worked_example.py`](../notebooks/reach_worked_example.py) (executed copy:
 `reach_worked_example.ipynb`). What a typed downstream API could look like next is in
 `docs/proposals/` and section G of `reports/reach-proposals-2026-11-23.html`; those are proposals, not code.
@@ -169,7 +169,42 @@ over_belt = belt.contains(m.positions) & m.workspace("four_dof")  # top-down pic
 fine = rr.reach_map(arm, belt.grid(0.05), rr.OrientationSet.sample())   # finer map of one volume
 ```
 
-There is no `ReachMap.sample()` or typed query object yet; that is what the proposals are about.
+### 4b. The workspace API: regions you sample from (`robot_reach.workspace`)
+
+Zach's pick P1 (proposals round 2, G′), made general underneath (2026-11-24).
+
+```python
+ws = result.workspace()                       # ReachableWorkspace(chain, frame, positions, rotations, every checked IK solution)
+ws.dexterous.sample(n, rng)                   # PoseSamples (n,)
+ws.hemisphere.inside(belt).only(elbow="up").sample_pairs(n, rng)   # (n, 2)
+ws.regions["dexterous"] == ws.region("dexterous") == ws.dexterous  # attributes are aliases
+ws.regions.register("belt_pick", ws.top_down.inside(belt))         # then ws.belt_pick, ws.top_down.belt_pick
+```
+
+| Call | Returns | Notes |
+|---|---|---|
+| `ReachResult.workspace(*, frame="base_link", base_xyz=(0,0,0))` | `ReachableWorkspace` | also `ReachableWorkspace.from_reach_map(m, voxel_size=)` |
+| `ws.regions` | `Regions` (Mapping) | `[name]`, iteration, `.register(name, region, *, parent=None)`, `.parent(name)`, `.children(name)` |
+| `ws.region(name)`, `ws.full/.reachable/.top_down/.hemisphere/.dexterous`, `ws.<registered>` | `WorkspaceRegion` | built-ins nest in that order |
+| `ws.only(allowed=None, **choices)` | `ReachableWorkspace` | same as filtering every region |
+| `ws.from_spec(spec)` | `WorkspaceRegion` | rebuilds a `spec()` (box / cylinder zones) |
+| `region.inside(zone)` | region | zone = anything with `contains(points)`: `rr.Box`, `rr.Cylinder` |
+| `region.only(allowed=None, **choices)` | region | `elbow="up"`, `wrist=("J5+","J5−")`; membership re-judged; unknown question → ValueError |
+| `region.within(deg)` | region | only orientations within `deg` of straight down |
+| `region.regions`, `region.region(name)`, `region.<sub>` | regions | registered sub-regions, carrying this region's filters |
+| `region.sample(n, rng)` / `.sample_pairs(n, rng, *, same_configuration=True)` / `.sample_waypoints(n, k, rng, ...)` | `PoseSamples` | uniform over poses; k distinct poses per draw |
+| `region.contains(points)` | (N,) bool | the grid voxel the point falls in |
+| `region.nearest_ok_pose(T, *, m_per_rad=0.1)` | `NearestPose(pose, q, distance_m, angle_deg, configuration)` | T is 4x4 or a position |
+| `region.spec()` | dict (JSON) | schema `robot_reach.region.v1` |
+| `region.to_sampler(*, same_configuration=True)` | `PoseSampler` | draw-only; `.save(path)` / `PoseSampler.load(path)` |
+| `region.as_reach_map_like()` | namespace | robot_trajectories' duck type: `joint_names, joint_solutions, valid_mask, reach_scores` |
+| `len(region)`, `.positions`, `.voxel_mask`, `.n_solutions`, `.count_by_configuration()` | | |
+
+`PoseSamples`: `pose (...,4,4)`, `q (...,dof)`, `configuration`, `configuration_name(*i)`, and at the edge
+`poses()` → `robot_msgs.geometry.Pose` list, `joint_states()` → `robot_msgs.sensor.JointState` list.
+One chain is implemented; a workspace records its chain, frame and base placement so a cell of several
+chains can be added without changing the region type.
+
 
 ## 5. Look: viser
 
@@ -213,8 +248,8 @@ duck-typed through `to_urdf_string()`; robot_reach never imports it.
 
 A consumer that wants messages for a reach solution builds them from the arrays (worked example §7):
 `robot_msgs.geometry.Pose.from_matrix(m.target(p, o))`, `robot_msgs.sensor.JointState(name=m.joint_names,
-position=q)`, `robot_msgs.manipulation.NamedPose(...)`. robot_reach does not return `Pose`, `JointState` or
-a workspace message itself today; a typed workspace hand-off is in the proposals.
+position=q)`, `robot_msgs.manipulation.NamedPose(...)`. `PoseSamples.poses()` / `.joint_states()` return `Pose` / `JointState` (§4b). Not in robot_msgs yet: a
+`manipulation.ReachableWorkspace` message holding §4b's arrays, with `WorkspaceRegion.spec()` as its query data.
 
 ## Run it
 

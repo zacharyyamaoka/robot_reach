@@ -113,6 +113,17 @@ class ReachResult:
         self.path = folder
         return folder
 
+    def workspace(self, *, frame: str = "base_link", base_xyz=(0.0, 0.0, 0.0)):
+        """The downstream API: a `ReachableWorkspace` whose named regions sample checked poses.
+
+            ws = result.workspace()
+            ws.hemisphere.inside(belt).only(elbow="up").sample_pairs(100, rng)
+        """
+        from .workspace import ReachableWorkspace
+
+        step = self.config.get("step") if self.config else None
+        return ReachableWorkspace.from_reach_map(self.reach, voxel_size=step, frame=frame, base_xyz=base_xyz)
+
     def display(self, **kwargs):
         """Open the viser viewer on this result (blocks until Ctrl-C unless block=False)."""
         from .viewer import ReachViewer

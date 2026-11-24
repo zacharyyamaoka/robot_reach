@@ -92,6 +92,21 @@ class Box:
         return cls(tuple((lo + hi) / 2), tuple(size))
 
 
+@dataclass(frozen=True)
+class Cylinder:
+    """A vertical cylinder in the arm's base frame: centre of its axis, radius and full height (m)."""
+
+    center: tuple[float, float, float]
+    radius: float
+    height: float
+
+    def contains(self, p: np.ndarray, pad: float = 1e-9) -> np.ndarray:
+        p = np.asarray(p, float).reshape(-1, 3)
+        c = np.asarray(self.center, float)
+        rho = np.linalg.norm(p[:, :2] - c[:2], axis=1)
+        return (rho <= self.radius + pad) & (np.abs(p[:, 2] - c[2]) <= self.height / 2 + pad)
+
+
 # --------------------------------------------------------------------------- grid shapes
 HULL_DIRECTIONS = 98  # planes of the convex-hull fit (a k-DOP: an outer approximation of the hull)
 

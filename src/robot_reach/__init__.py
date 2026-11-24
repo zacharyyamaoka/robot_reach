@@ -6,6 +6,7 @@
     result = rr.analyze(ur5e())        # compute once
     result.save("out/ur5e")            # the result log
     rr.load("out/ur5e").display()      # view it in viser, any time later
+    rr.load("out/ur5e").workspace().dexterous.sample(3, rng)   # checked poses downstream
 """
 
 from .analyze import ReachResult, analyze, load
@@ -14,13 +15,21 @@ from .codes import CODE_COLORS, CODE_LABELS, LEVEL_NAMES, Code
 from .joint_space import JointMap, JointRanges, joint_map, joint_ranges
 from .orientations import OrientationSet
 from .reach import ReachMap, reach_map
-from .sampling import Box, FKCloud, fk_cloud
+from .sampling import Box, Cylinder, FKCloud, fk_cloud
+from .workspace import NearestPose, PoseSampler, PoseSamples, ReachableWorkspace, Regions, WorkspaceRegion
 
 __all__ = [
     "Arm",
     "ArmMesh",
     "Box",
     "Code",
+    "Cylinder",
+    "NearestPose",
+    "PoseSampler",
+    "PoseSamples",
+    "ReachableWorkspace",
+    "Regions",
+    "WorkspaceRegion",
     "CODE_COLORS",
     "CODE_LABELS",
     "FKCloud",

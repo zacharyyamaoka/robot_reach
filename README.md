@@ -81,6 +81,21 @@ J5+/J5− (a UR URDF gets them too). Every working solution is tagged from its o
 solver's slot (the closed-form slot's elbow sign flips meaning with the shoulder), saved as
 `ReachMap.sol_config`, and `ReachMap.filtered(cfg.allowed(elbow="up"))` is the map with only those.
 
+## Downstream: sample a workspace
+
+```python
+ws = rr.load("out/ur5e").workspace()                              # a ReachableWorkspace
+ws.dexterous.sample(3, rng)                                       # PoseSamples: pose (3,4,4), q, configuration
+belt = rr.Box(center=(0.5, 0.0, 0.2), size=(0.4, 0.6, 0.2))
+ws.hemisphere.inside(belt).only(elbow="up").sample_pairs(100, rng)   # (100, 2): A -> B, one IK configuration
+ws.regions.register("steep", ws.hemisphere.within(30))            # now ws.steep, ws.regions["steep"]
+```
+
+One region type (`WorkspaceRegion`); the levels full ⊃ reachable ⊃ top_down ⊃ hemisphere ⊃ dexterous are
+the built-in entries of a registry, and the attributes are aliases onto it. Filters (`inside`, `only`,
+`within`) return regions; `only` re-judges membership, so a filter never overclaims. Every pose handed out
+is one IK actually solved and the library checked. Details: docs/api.md §4b.
+
 ## What you see
 
 **Cartesian.** Grid points (bounded by the FK cloud, so nobody guesses the extent) × one shared
