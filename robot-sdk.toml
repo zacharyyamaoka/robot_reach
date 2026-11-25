@@ -5,6 +5,13 @@ schema = "robot-sdk-declaration/1"
 role = "library"
 layer = "leaf"
 one_line = "Workspace and IK-branch reach of any arm, FK/IK passed in"
+summary = "Reachability of any arm in Cartesian and joint space, from FK and IK passed in as pure functions. Reach maps, joint maps, IK branches, orientations; save results, view them in viser. Example arms built in: pendulum, RR, five-bar, 3-DOF shoulder, UR5e. Loads URDFs."
+use_when = "Workspace, \"can the arm reach X\", IK branch choice, placing a robot or a bin, arm sizing."
+
+# Where to read more. github and pypi are required; the rest are what this package has.
+[links]
+github = "https://github.com/zacharyyamaoka/robot_reach"
+pypi = "https://pypi.org/project/robot-reach/"
 
 [[produces]]
 type = "robot_msgs.manipulation.NamedPose"
