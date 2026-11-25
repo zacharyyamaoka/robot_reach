@@ -10,6 +10,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv run --isolated --no-sources --no-dev --python ${{ matrix.python }} --extra test python -m pytest -q
+      # WHY the fallback (2026-11-25): pyproject needs robot-msgs>=0.3.1 (NamedPose.description),
+      # but robot_msgs' 0.3.1 release commit was never tagged, so PyPI stops at 0.3.0 and the
+      # PyPI-only resolve fails before a single test runs. Try PyPI first, exactly as a user's
+      # `pip install robot-reach` would; only if that cannot resolve, take robot_msgs from its
+      # public repo at the 0.3.1 release commit and say so with a warning. Once 0.3.1 is on PyPI
+      # the first branch succeeds and the fallback goes quiet; it can then be deleted.
+      - name: install
+        run: |
+          uv venv --python ${{ matrix.python }} .venv
+          if ! uv pip install --no-sources -e ".[test]"; then
+            echo "::warning::robot-msgs>=0.3.1 is not on PyPI yet; testing against robot_msgs@cf3709b (release 0.3.1) from GitHub"
+            uv pip install --no-sources -e ".[test]" \
+              "robot-msgs @ git+https://github.com/zacharyyamaoka/robot_msgs@cf3709ba2e1eb14e95d4422f2c46c668f4bb31fb"
+          fi
+      - run: .venv/bin/python -m pytest -q
         env:
           MPLBACKEND: Agg
