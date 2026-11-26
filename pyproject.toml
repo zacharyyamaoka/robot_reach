@@ -25,7 +25,7 @@ classifiers = [
 # vocabulary every new package depends on): the analysis must import with nothing heavier.
 # The viewer and the plots are extras.
 # robot-msgs 0.3.1: NamedPose.description (goals.py, rest.py).
-dependencies = ["numpy>=1.26", "robot-msgs>=0.3.1"]
+dependencies = ["numpy>=1.26", "robot-msgs>=0.3.2"]
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.8"]
